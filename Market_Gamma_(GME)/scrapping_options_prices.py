@@ -409,7 +409,7 @@ bid_contracts = [Euro_Option(strike = row.Strike,
                             lifetime = (row.Expiry_Date - current_date).days,
                             tp = 'call' if row.Is_Call else 'put',
                             asset = GME)
-                 for row in df.itertuples()]
+     d            for row in df.itertuples()]
 
 
 def dfs(e):
