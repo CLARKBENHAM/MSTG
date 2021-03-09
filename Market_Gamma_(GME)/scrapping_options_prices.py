@@ -13,9 +13,12 @@ import random
 from collections import namedtuple
 import pickle
 import os
-
+import sys
 #%%
 if __name__ == "__main__":
+    print("Start")
+    sys.exit()
+    print("End")
     base_url = "https://finance.yahoo.com/quote/GME/options"
     r = requests.get(base_url)
     root = lxml.html.fromstring(r.content)
@@ -99,7 +102,6 @@ if __name__ == "__main__":
     
     df.to_pickle(f"current_option_prices {datetime.today().strftime('%b,%d %Y')}")
     # df =  pd.read_pickle("current_option_prices")
-        
 #%%:
 import numpy as np
 import pandas as pd
