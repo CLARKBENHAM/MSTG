@@ -112,6 +112,7 @@ import random
 from pprint import pprint      
 import itertools
 
+from 
 
 def brownian(x0, n, sd = None, loc = None, dt = 1, out = None):
     "Computes the brownian motion with an average increase of loc and DAILY SD of sd. \
