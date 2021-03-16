@@ -70,7 +70,10 @@ if __name__ == "__main__":
                               for i in row.xpath("td/span")]
             #Last Trade 
             #but hours aren't 0 padded!?
-            out[1] = datetime.strptime(out[1], "%Y-%m-%d %I:%M%p EST")
+            try:
+                out[1] = datetime.strptime(out[1], "%Y-%m-%d %I:%M%p EST")
+            except:#day light savings time??
+                out[1] = datetime.strptime(out[1], "%Y-%m-%d %I:%M%p EDT")
             return row_tup._make(out)
     
     for url in urls[5:]:
