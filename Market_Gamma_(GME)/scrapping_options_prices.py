@@ -264,6 +264,14 @@ plt.show()
 
 
 
+
+
+
+
+
+
+
+
 #%% Scrap
 approx_value = lambda row: ((row.Expiry_date-current_date)/2*math.pi)**0.5 * row.Implied_Volatility*row.Strike
 

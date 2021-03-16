@@ -1,7 +1,8 @@
 *.zip
 *.cfg
 *~
-
+**/hide
+**/data_pics
 emails
 Takeout
 
