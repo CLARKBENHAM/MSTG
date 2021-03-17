@@ -11,7 +11,7 @@ from datetime import datetime
 import time
 import random
 
-from collections import namedtuple
+from collections import namedtuple, Counter
 import pickle
 import os
 import sys
@@ -24,6 +24,13 @@ import pydirectinput
 
 from PIL import Image, ImageChops, ImageDraw
 
+from pytesseract import pytesseract
+
+from skimage.filters import threshold_local
+import cv2
+
+pytesseract.tesseract_cmd = "c:\\Program Files\\Tesseract-OCR\\tesseract.exe"
+sys.exit()
 if __name__ == "__main__":
     #need to start w/ SSE 2nd from bottom row selected
     pygu.moveTo(x=1897,y=998, duration=0.359)
@@ -83,7 +90,6 @@ def get_boundry(header, check=False):
     """get ix that seperate header columns
     check: visually plots to confirm where ix marked
     """
-    # header = Image.open("table_header.png").convert('L')
     header_arr = np.array(header.crop((0,10, 1595,24)))
 
     #sep bar is 2 pixels wide and lighter then surrounding
@@ -123,48 +129,260 @@ def get_boundry(header, check=False):
     return col_names, bnd_box
 
 #horizontal ambigious, but vertical position certain
-_, bot, *_ = pygu.locate("header_top_border.png","data_pics\img0.png" )
-bot -= 9
+_, head_bot, *_ = pygu.locate("header_top_border.png","data_pics\img0.png" ) 
+#top of scrollbar up arrow touches bottom of column header
+head_bot -= 9 #bottom of header
+sw, sh = Image.open("data_pics\img0.png").size
+boundry_sz = 15
 header = Image.open("data_pics\img0.png").convert('L'
-                                                  ).crop((15, bot-30, 1905, bot))
+                                                  ).crop((boundry_sz, head_bot-30, sw-boundry_sz, head_bot))
 col_names, bnd_box = get_boundry(header)
+#strikes box includes a space for the 'right arrow' next to the contract row
+bnd_box[0] = (15, 0, bnd_box[0][2], bnd_box[0][3])
+
 if col_names[-1] == 'IV':
     #got a repeat for last value? Not sure why
     del col_names[-1] 
     del bnd_box[-1]
+#since these values aren't in every row, can't tell which row apply too
 bad_ix = col_names.index("Last Trade")
 bad_ix2 = col_names.index("Change")
 del col_names[bad_ix],bnd_box[bad_ix],
 del  col_names[bad_ix2-1], bnd_box[bad_ix2-1]
 
 name2ix = {n:ix for ix,n in enumerate(col_names)}
-#%%
-header2screen = lambda b: (b[0]+15, bot, b[2]+15, 1080) #from header clipping to screen shot
+#%% temp
+header2screen = lambda b: (b[0]+boundry_sz, head_bot, b[2]+boundry_sz, sh) #from header clipping to screen shot
 screen_bnd = [header2screen(bx) for bx in bnd_box]
 vals = []
 for img in os.listdir("data_pics"):
     break
+#crop non-data: contract headers + stuff at top
+
 # split = list(pygu.locateAll(f"header_down_arrow.png","data_pics\{img}" ))
-split = list(pygu.locateAll("header_down_arrow.png","del.png" ))
-im = Image.open(f"data_pics\{img}")
-for l,t, *_ in split: 
-    top = im.crop(subheader)
+# im = Image.open(f"data_pics\{img}")
+img = "del.png"
+split = list(pygu.locateAll("header_down_arrow.png",img))
+split_tops = [t for _,t,*_ in split] + [sh-55]#ignore desktop icon bar at bottom
 
-for bx,n in zip(screen_bnd, col_names):
-    ocr = pytesseract.image_to_string(im.crop(bx))
-    if n == 'Symbol':
-        s = re.findall("[a-zA-Z0-9 ]+", ocr) 
-    else:
-        s = list(map(float, re.findall("\d+", ocr)))
-    print(n, len(s))
-    vals += [s]
-vals
+im = Image.open(img)
+
+data_im = []
+for t1,t2 in zip(split_tops[:-1], split_tops[1:]): 
+    data_im += [im.crop((0, t1+25, sw, t2-5))]#only get data r0ws
+
+new_h = sum([d.size[1] for d in data_im])
+new_w = sw
+new_im = Image.new('L', (new_w, new_h))
+y_offset = 0
+for d in data_im:
+    new_im.paste(d, (0, y_offset))
+    y_offset += d.size[1]
+
 #%%
-from pytesseract import pytesseract
-# pytesseract.pytesseract.tesseract_cmd = 'C:\Program Files\Tesseract-OCR\tesseract.exe'
-pytesseract.tesseract_cmd = "c:\\Program Files\\Tesseract-OCR\\tesseract.exe"
+def _ocr2num(ocr, outtype):
+    """returns numeric list from generated output and output type 
+    outtype: useful for constraining # of periods
+    """
+    ocr = ocr.replace(",", "")
+    if outtype is float:
+        str2f = lambda i: float(i) \
+                          if i.count(".") <= 1 \
+                          else float(i[:i.index(".")] + i[i.index(".")+1:])
+    elif outtype is int:
+        str2f = lambda i: int(i) \
+                          if i.count(".") == 0 \
+                          else int(i.replace(".", ""))
+    return list(map(str2f, re.findall("[\d\.]+", ocr)))
+    
+def img2values(img_path, col_names=col_names, bnd_box=bnd_box):
+    """returns values for a PIL Image that is cropped to show only 1 column of data
+    if outtype in (int, float) returns median numeric prediction 
+        of 3 different threshold preprocessing
+    outtype: ID's column and useful for constraining # of periods
+    """
+    im = Image.open(img_path)
+    sw, sh = im.size
+    split = list(pygu.locateAll("header_down_arrow.png",img_path))
+    split_tops = [t for _,t,*_ in split] + [sh-55]#ignore desktop icon bar at bottom
+    
+    #only get data rows; cutout top headers, any subheaders in the middle of text
+    data_im = []
+    for t1,t2 in zip(split_tops[:-1], split_tops[1:]): 
+        data_im += [im.crop((0, t1+25, sw, t2-5))]
+    new_h = sum([d.size[1] for d in data_im])
+    new_w = sw
+    new_im = Image.new('L', (new_w, new_h))
+    y_offset = 0
+    for d in data_im:
+        new_im.paste(d, (0, y_offset))
+        y_offset += d.size[1]
+    
+    vals = []
+    header2clipped = lambda bx:  (boundry_sz + bx[0], 0, boundry_sz + bx[2], new_h)
+    for bx,n in zip(bnd_box, col_names):
+        crop_im = new_im.crop(header2clipped(bx))
+        outtype = int if  n in ("Volume", "Open Int")  \
+                  else str if n == 'Symbol' \
+                  else float
+              
+        if outtype is str:#Symbol column
+            ocr = pytesseract.image_to_string(crop_im)    
+            vals += [[i for i in re.findall("[a-zA-Z0-9 \/\.]+", ocr)
+                      if len(i) > 14]]
+            continue 
+        
+        #median numeric prediction of 3 different threshold preprocessers
+        cv_im = np.array(crop_im)    
+        my_config = '--psm 6 digits tessedit_char_whitelist=0123456789'
+        
+        ocr1 = pytesseract.image_to_string(cv_im, config= my_config)
+        
+        thresh_im = cv2.adaptiveThreshold(cv_im,
+                                          255,
+                                          cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                          cv2.THRESH_BINARY, 
+                                          85, 
+                                          11)
+        ocr2 = pytesseract.image_to_string(thresh_im, config= my_config)
+        
+        blur = cv2.GaussianBlur(cv_im,(3,3),0)
+        ret3,th3 = cv2.threshold(blur,0,255,cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+        ocr3 = pytesseract.image_to_string(th3, config= my_config)
+         
+        preds = list(map(lambda i: _ocr2num(i, outtype),
+                    [ocr1, ocr2, ocr3]))
+        ocr_l = list(map(len, preds))
+        mnl, mxl = min(ocr_l), max(ocr_l)    
+        if mnl == mxl: #preds equal len, 
+            s = [sorted([i,j,k])[1] for i,j,k in zip(*preds)]
+        else:
+            #gave differgent answers in length; use modal length 
+            common_len, nl = Counter(
+                                list(map(len, preds))
+                                     ).most_common(1)[0]
+            ocr_names = ("No Preprocess", "Adative Gaussian", "Otsu")
+            bad_n = [ocr_names[i] for i in range(3) 
+                     if ocr_l[i] != mxl] #does better than common_len
+            if nl > 1:
+                print(f"warning ocr processes {bad_n}, failed for {n} on {img_path}")
+            else:
+                print(f"Warning ALL ocr processes Disagreed for {n} on {img_path}")
+            s = preds[ocr_l.index(mxl)]
+            
+        #decimal placement check
+        sum_seg = 0
+        out = []
+        for ix, (t1,t2) in enumerate(zip(split_tops[:-1], split_tops[1:])): 
+            seg_sz = (len(s) * (t2-t1))//(split_tops[-1] - split_tops[0]) 
+            if len(split) -2 == ix:
+                segment = s[sum_seg:]
+            else:
+                segment = s[sum_seg:seg_sz]
+            for ix in range(1, len(segment)-1):
+                while segment[ix]*8 > segment[ix-1] and segment[ix]*8 > segment[ix+1]:
+                    segment[ix] /= 10
+                while segment[ix]*8 < segment[ix-1] and segment[ix]*8 < segment[ix+1]:
+                    segment[ix] *= 10
+            out += segment
+            sum_seg += seg_sz
+        vals += [out]
+    return vals
 
-pytesseract.image_to_string(cropper(Image.open(f"data_pics\{img}")))
+vals = img2values(img)
+df = pd.DataFrame(list(zip(*vals)))
+df.head()
+#%%
+# import imutils.perspective
+
+crop_im = new_im.crop(header2clipped(bnd_box[2]))
+
+# thres_lvl = 90
+# _, thresh_im = cv2.threshold(cv_im, thres_lvl, 255, cv2.THRESH_BINARY)
+# kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3,3))
+# close_im = cv2.morphologyEx(thresh_im, cv2.MORPH_CLOSE, kernel)
+# result = 255 - close_im
+
+# thresh = cv2.threshold(cv_im, 127, 255,  cv2.THRESH_OTSU)[1]
+# thresh_im = cv2.bitwise_not(thresh)
+# dsize = (thresh_im.shape[1]*16, thresh_im.shape[0]*16)
+# thresh_im = cv2.resize(thresh_im, dsize)
+
+kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 12))
+    dilation = cv2.dilate(thresh_im, kernel, iterations=1)
+    
+
+
+cv_im = np.array(crop_im)
+kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 12))
+dilation = cv2.dilate(thresh_im, kernel, iterations=1)
+
+
+ocr1 = pytesseract.image_to_string(cv_im, config= '--psm 6 digits tessedit_char_whitelist=0123456789')
+thresh_im = cv2.adaptiveThreshold(cv_im,
+                                  255,
+                                  cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                  cv2.THRESH_BINARY, 
+                                  85, 
+                                  11)
+ocr2 = pytesseract.image_to_string(thresh_im, config= '--psm 6 digits tessedit_char_whitelist=0123456789')
+blur = cv2.GaussianBlur(cv_im,(3,3),0)
+ret3,th3 = cv2.threshold(blur,0,255,cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+ocr3 = pytesseract.image_to_string(th3, config= '--psm 6 digits tessedit_char_whitelist=0123456789')
+
+# Image.fromarray(thresh_im).show()
+# Image.fromarray(dilation).show()
+# Image.fromarray(th3).show()
+# ocr = pytesseract.image_to_string(dilation, config= '--psm 6 digits tessedit_char_whitelist=0123456789')
+# ocr = pytesseract.image_to_string(crop_im, lang='eng',
+#         config='--psm 10 --oem 3 -c tessedit_char_whitelist=0123456789')
+s1 = list(map(float, re.findall("[\d\.]+", ocr1)))
+s2 = list(map(float, re.findall("[\d\.]+", ocr2)))
+s3 = list(map(float, re.findall("[\d\.]+", ocr3)))
+s = [sorted([i,j,k])[1] for i,j,k in zip(s1,s2,s3)]
+len(s),s
+#%%
+cntrs = cv2.findContours(dilation, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+cntrs = cntrs[0] if len(cntrs) == 2 else cntrs[1]
+result = cv_im.copy()
+for c in cntrs:
+    # # for each letter, create red rectangle
+    # x, y, w, h = cv2.boundingRect(c)
+    # cv2.rectangle(result, (x, y), (x + w, y + h), (0, 0, 255), 2)
+
+    # # prepare letter for OCR
+    # box = thresh[y:y + h - 2, x:x + w]
+    # box = cv2.bitwise_not(box)
+    # box = cv2.GaussianBlur(box, (3, 3), 0)
+
+    # # retreive the angle. For the meaning of angle, see below
+    # # https://namkeenman.wordpress.com/2015/12/18/open-cv-determine-angle-of-rotatedrect-minarearect/
+    # rect = cv2.minAreaRect(c)
+    # angle = rect[2]
+
+    # # put angle below letter
+    # font = cv2.FONT_HERSHEY_SIMPLEX
+    # bottomLeftCornerOfText = (x, y+h+20)
+    # fontScale = 0.6
+    # fontColor = (255, 0, 0)
+    # lineType = 2
+    # cv2.putText(result, str(angle), bottomLeftCornerOfText, font, fontScale, fontColor, lineType)
+
+    # do the OCR
+    custom_config = r'-l eng --oem 3 --psm 10'
+    text = pytesseract.image_to_string(box, config=custom_config)
+    print("Detected :" + text + ", angle: " + str(angle))
+
+
+Image.fromarray(result).show()
+pytesseract.image_to_string(result)
+# blur = cv2.GaussianBlur(crop_im)
+# edge = cv2.Canny(blur, 75, 200)
+#%%
+# pytesseract.image_to_string(thres_im)
+Image.fromarray(thresh_im).show()
+# Image.fromarray(close_im).show()
+# Image.fromarray(result).show()
 
 #%%
 im = Image.open("data_pics\img0.png").convert('LA')
@@ -175,7 +393,7 @@ for ix in (top,top-10,top-20):
 im.show()
 
 
-#%% 
+#%%  #helpful asides
 def get_position():
     pos_l = []
     for _ in range(4):
@@ -188,6 +406,26 @@ def get_position():
     #left top right bottom
     print((min(x), min(y), max(x), max(y)), "\n", pos_l)
 
+def _concat_img(data_im, how='h'):
+    """conatenate a list of Images
+    how: h for horizontal, v for vertical
+    """
+    if how == 'v':
+        new_h = sum([d.size[1] for d in data_im])
+        new_w = max([d.size[0] for d in data_im])
+    elif how == 'h':
+        new_h = max([d.size[1] for d in data_im])
+        new_w = sum([d.size[0] for d in data_im])
+    new_im = Image.new('L', (new_w, new_h))
+    y_offset = 0
+    x_offset = 0
+    for d in data_im:
+        new_im.paste(d, (x_offset, y_offset))
+        if how == 'v':
+            y_offset += d.size[1]
+        elif how == 'h':
+            x_offset += d.size[0]            
+    return new_im
 
 #%%
 #scrape
