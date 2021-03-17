@@ -101,7 +101,7 @@ if __name__ == "__main__":
     # if os.getcwd().split("\\")[-1] != "side_projects":
     #     os.chdir(".\Desktop\side_projects")
     
-    df.to_pickle(f"current_option_prices {datetime.today().strftime('%b,%d %Y')}")
+    df.to_pickle(f"market_data\\current_option_prices {datetime.today().strftime('%b,%d %Y')}")
     # df =  pd.read_pickle(f"{github_dir}\\Market_Gamma_(GME)\\current_option_prices")
     sys.exit()
 

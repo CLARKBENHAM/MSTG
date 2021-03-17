@@ -163,7 +163,7 @@ for img in os.listdir("data_pics"):
 # im = Image.open(f"data_pics\{img}")
 img = "del.png"
 split = list(pygu.locateAll("header_down_arrow.png",img))
-split_tops = [t for _,t,*_ in split] + [sh-55]#ignore desktop icon bar at bottom
+split_tops = [t for _,t,*_ in split] + [sh-63]#ignore desktop icon bar at bottom
 
 im = Image.open(img)
 
@@ -193,7 +193,8 @@ def _ocr2num(ocr, outtype):
         str2f = lambda i: int(i) \
                           if i.count(".") == 0 \
                           else int(i.replace(".", ""))
-    return list(map(str2f, re.findall("[\d\.]+", ocr)))
+                          
+    return list(map(str2f, re.findall("\d+\.*\d*", ocr)))
     
 def img2values(img_path, col_names=col_names, bnd_box=bnd_box):
     """returns values for a PIL Image that is cropped to show only 1 column of data
@@ -203,8 +204,9 @@ def img2values(img_path, col_names=col_names, bnd_box=bnd_box):
     """
     im = Image.open(img_path)
     sw, sh = im.size
-    split = list(pygu.locateAll("header_down_arrow.png",img_path))
-    split_tops = [t for _,t,*_ in split] + [sh-55]#ignore desktop icon bar at bottom
+    split = list(pygu.locateAll("header_down_arrow.png", img_path))
+    #need to cut desktop icon bar at bottom; else will be counted as a row
+    split_tops = [t for _,t,*_ in split] + [sh-63]
     
     #only get data rows; cutout top headers, any subheaders in the middle of text
     data_im = []
@@ -234,7 +236,7 @@ def img2values(img_path, col_names=col_names, bnd_box=bnd_box):
         
         #median numeric prediction of 3 different threshold preprocessers
         cv_im = np.array(crop_im)    
-        my_config = '--psm 6 digits tessedit_char_whitelist=0123456789'
+        my_config = '--psm 6 digits tessedit_char_whitelist=0123456789\\.\\,'
         
         ocr1 = pytesseract.image_to_string(cv_im, config= my_config)
         
@@ -270,7 +272,7 @@ def img2values(img_path, col_names=col_names, bnd_box=bnd_box):
                 print(f"Warning ALL ocr processes Disagreed for {n} on {img_path}")
             s = preds[ocr_l.index(mxl)]
             
-        #decimal placement check
+        #decimal placement check; ERRORS on OPEN VOLUME
         sum_seg = 0
         out = []
         for ix, (t1,t2) in enumerate(zip(split_tops[:-1], split_tops[1:])): 
@@ -292,6 +294,150 @@ def img2values(img_path, col_names=col_names, bnd_box=bnd_box):
 vals = img2values(img)
 df = pd.DataFrame(list(zip(*vals)))
 df.head()
+#%% extra info by cell; split on row lines
+#each row is ~26 pixels
+import math
+#WARNING: bottom, right sides of img in MSFT display have a bevel added; not actually on img. 
+#       eg Image.fromarray(255*np.ones((500,500))).show()
+crop_im = new_im.crop(header2clipped(bnd_box[5]))
+
+cv_im = np.array(crop_im)
+result = cv_im.copy()
+
+_, th_l = cv2.threshold(cv_im, 120, 255, cv2.THRESH_BINARY)
+#erode, dilate have backwards effects, since will invert colors. erode makes more black->more white
+kernel_hor = np.ones((5, 50), dtype=np.uint8)
+erode = cv2.erode(th_l, kernel_hor)#black squares where each number is
+
+kernel_ones = np.ones((3, 5), dtype=np.uint8)
+blocks = cv2.dilate(erode, kernel_ones)
+# Image.fromarray(blocks).show() 
+
+# blocks[:,-5:] = 255#some border boundries get written to white size 
+
+# kernel_hor = np.ones((5, 20))
+# kernel_hor[0,:] *= -1#np.uint8(0)
+# kernel_hor[-1,:] *= -1#np.uint8(0)
+# kernel_v = np.array([[-1,-1,-1]*5, 
+#                      [0,0,0]*5,
+#                      [1,1,1]*5])
+# erode = cv2.filter2D(blocks, -1, kernel_v)
+# [2:-2, 2:-20] #some boundry siz
+
+# edges = cv2.Canny(~blocks, 80, 120)
+# lines = cv2.HoughLinesP(edges, 1, math.pi/2, 2, None, 30, 1);
+# for line in lines[0]:
+#     pt1 = (line[0],line[1])
+#     pt2 = (line[2],line[3])
+#     cv2.line(cv_im, pt1, pt2, (0,0,255), 3)
+# Image.fromarray(cv_im).show() 
+
+# # Detect horizontal lines
+# horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (40,1))
+# detect_horizontal = cv2.morphologyEx(~blocks, cv2.MORPH_OPEN, horizontal_kernel, iterations=2)
+# cnts = cv2.findContours(detect_horizontal, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+# cnts = cnts[0] if len(cnts) == 2 else cnts[1]
+# for c in cnts:
+#     print("horizontal: ",c)
+#     cv2.drawContours(result, [c], -1, (36,255,12), 2)
+# Image.fromarray(result).show()     
+
+#looking for white holes in black background, so colors inverted
+contours, hierarchy  = cv2.findContours(~blocks, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+# Image.fromarray(cv2.drawContours(cv_im, contours, -1, (0,255,0), 3)).show()
+
+#WARNING: cv2 y=0 is bottom, Image y=0 is top.
+contours = [c.reshape(-1,2) for c in contours]
+contour2box = lambda c: (0, #min(c[:,0]),
+                         crop_im.size[1] - max(c[:,1]) -3,
+                         crop_im.size[0], #max(c[:,0]), 
+                         crop_im.size[1] - min(c[:,1]) + 3)#left top right bottom
+#contour x,y but cv2 images are y,x
+contour2cv = lambda c: (slice(min(c[:,1])-3, max(c[:,1])+3), #y
+                        slice(min(c[:,0]), max(c[:,0])))
+
+im_data = []
+_v = []
+outtype = int
+for c in contours:
+    b = contour2box(c) 
+    im_data += [crop_im.crop(b)]
+    _im = cv_im[contour2cv(c)] 
+    #need to improve pre-processing
+    
+    my_config = '--psm 7 digits tessedit_char_whitelist=0123456789' #7 = single entry
+    
+    #?: 1 better on gray, 2 on white?
+    ocr1 = pytesseract.image_to_string(_im, config= my_config)
+    
+    thresh_im = cv2.adaptiveThreshold(_im,
+                                      255,
+                                      cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                      cv2.THRESH_BINARY, 
+                                      85, 
+                                      11)
+    ocr2 = pytesseract.image_to_string(thresh_im, config= my_config)
+    
+    blur = cv2.GaussianBlur(_im,(3,3),0)#sometimes helps, sometimes hurts
+    ret3,th3 = cv2.threshold(blur,0,255,cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+    ocr3 = pytesseract.image_to_string(th3, config= my_config)
+
+    ret3,th3 = cv2.threshold(_im,0,255,cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+    ocr4 = pytesseract.image_to_string(th3, config= my_config)    
+    # thresh_im = cv2.adaptiveThreshold(_im,
+    #                                   255,
+    #                                   cv2.THRESH_OTSU,
+    #                                   cv2.THRESH_BINARY, 
+    #                                   85, 
+    #                                   11)
+    # ocr4 = pytesseract.image_to_string(thresh_im, config= my_config)
+    
+    # preds = list(map(lambda i: _ocr2num(i, outtype),
+    #                 [ocr1, ocr2, ocr3]))
+    preds = []
+    for i in [ocr1, ocr2, ocr3, ocr4]:
+        preds += _ocr2num(i, outtype)
+    print(preds)
+    s, n_cnt = Counter(preds).most_common(1)[0]
+    # if n_cnt ==1:
+    #     print("All disagree")
+    _v += [s]
+_concat_img(im_data, how='v').show()
+_v
+#%%
+# Image.fromarray(cv_im[contour2cv(contours[4])]).show()
+sh = lambda m: Image.fromarray(m).show()
+_im = cv_im[contour2cv(contours[-1])]
+blur = cv2.GaussianBlur(_im,(3,3),0)
+ret3,th3 = cv2.threshold(_im,0,255,cv2.THRESH_BINARY+cv2.THRESH_OTSU)
+pytesseract.image_to_string(th3, config= my_config)
+#%% scrap
+# crop_im = new_im.crop(header2clipped(bnd_box[5]))
+crop_im = new_im.crop((30, 0, sw-100, 490))
+cv_im = np.array(crop_im)
+result = cv_im.copy()
+thresh = cv2.threshold(cv_im, 20, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)[1]
+
+# Detect horizontal lines
+horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (40,1))
+detect_horizontal = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, horizontal_kernel, iterations=2)
+cnts = cv2.findContours(detect_horizontal, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+cnts = cnts[0] if len(cnts) == 2 else cnts[1]
+for c in cnts:
+    print("horizontal: ",c)
+    cv2.drawContours(result, [c], -1, (36,255,12), 2)
+
+# Detect vertical lines
+vertical_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1,10))
+detect_vertical = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, vertical_kernel, iterations=2)
+cnts = cv2.findContours(detect_vertical, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+cnts = cnts[0] if len(cnts) == 2 else cnts[1]
+for c in cnts:
+    print("vertical: ",c)
+    cv2.drawContours(result, [c], -1, (36,255,12), 2)
+    
+Image.fromarray(result).show() 
+Image.fromarray(thresh).show()
 #%%
 # import imutils.perspective
 
