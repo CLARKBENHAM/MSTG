@@ -87,7 +87,7 @@ def remove_duplicates():
 #%%
 #17 indexes
 def get_boundry(header, check=False):
-    """get ix that seperate header columns
+    """get box that seperate header columns of a header only image
     check: visually plots to confirm where ix marked
     """
     header_arr = np.array(header.crop((0,10, 1595,24)))
@@ -113,10 +113,10 @@ def get_boundry(header, check=False):
     boundry_ix.insert(0,0)
     w,h = header.size
     boundry_ix += [w-1]
-    bnd_box = [(ix1, 0, ix2,h) for ix1, ix2 in zip(boundry_ix[:-1], 
+    header_bnd_box = [(ix1, 0, ix2,h) for ix1, ix2 in zip(boundry_ix[:-1], 
                                                    boundry_ix[1:])]
     col_names = []
-    for bx in bnd_box:
+    for bx in header_bnd_box:
         ocr = pytesseract.image_to_string(header.crop(bx))
         try:
             s = re.search("[a-zA-Z ]+", ocr).group()#filter cruft
@@ -126,58 +126,40 @@ def get_boundry(header, check=False):
             else:
                 raise e
         col_names += [s]
-    return col_names, bnd_box
+    #strikes box includes a space for the 'right arrow' next to the contract row
+    header_bnd_box[0] = (15, 0, header_bnd_box[0][2], header_bnd_box[0][3])
+    return col_names, header_bnd_box
 
-#horizontal ambigious, but vertical position certain
+# # Finds where header bar[eg. "Strikes", ... "Gamma"] is on an image
+#    returns boundries for seperating columns on the header
 _, head_bot, *_ = pygu.locate("header_top_border.png","data_pics\img0.png" ) 
 #top of scrollbar up arrow touches bottom of column header
 head_bot -= 9 #bottom of header
 sw, sh = Image.open("data_pics\img0.png").size
 boundry_sz = 15
+header_crop_only = (boundry_sz, head_bot-30, sw-boundry_sz, head_bot)
 header = Image.open("data_pics\img0.png").convert('L'
-                                                  ).crop((boundry_sz, head_bot-30, sw-boundry_sz, head_bot))
-col_names, bnd_box = get_boundry(header)
-#strikes box includes a space for the 'right arrow' next to the contract row
-bnd_box[0] = (15, 0, bnd_box[0][2], bnd_box[0][3])
+                                                  ).crop(header_crop_only)
+col_names, header_bnd_box = get_boundry(header)
 
+#got a repeat for last value? Not sure why
 if col_names[-1] == 'IV':
-    #got a repeat for last value? Not sure why
     del col_names[-1] 
-    del bnd_box[-1]
-#since these values aren't in every row, can't tell which row apply too
+    del header_bnd_box[-1]
+#these values aren't in every row, can't tell which row apply too
 bad_ix = col_names.index("Last Trade")
 bad_ix2 = col_names.index("Change")
-del col_names[bad_ix],bnd_box[bad_ix],
-del  col_names[bad_ix2-1], bnd_box[bad_ix2-1]
+del col_names[bad_ix], header_bnd_box[bad_ix],
+del  col_names[bad_ix2-1], header_bnd_box[bad_ix2-1]
 
 name2ix = {n:ix for ix,n in enumerate(col_names)}
 #%% temp
-header2screen = lambda b: (b[0]+boundry_sz, head_bot, b[2]+boundry_sz, sh) #from header clipping to screen shot
-screen_bnd = [header2screen(bx) for bx in bnd_box]
+ #from header clipping to screen shot
+header2screen = lambda b: (b[0]+boundry_sz, head_bot, b[2]+boundry_sz, sh)
+screen_bnd = [header2screen(bx) for bx in header_bnd_box]
 vals = []
 for img in os.listdir("data_pics"):
     break
-#crop non-data: contract headers + stuff at top
-
-# split = list(pygu.locateAll(f"header_down_arrow.png","data_pics\{img}" ))
-# im = Image.open(f"data_pics\{img}")
-img = "del.png"
-split = list(pygu.locateAll("header_down_arrow.png",img))
-split_tops = [t for _,t,*_ in split] + [sh-63]#ignore desktop icon bar at bottom
-
-im = Image.open(img)
-
-data_im = []
-for t1,t2 in zip(split_tops[:-1], split_tops[1:]): 
-    data_im += [im.crop((0, t1+25, sw, t2-5))]#only get data r0ws
-
-new_h = sum([d.size[1] for d in data_im])
-new_w = sw
-new_im = Image.new('L', (new_w, new_h))
-y_offset = 0
-for d in data_im:
-    new_im.paste(d, (0, y_offset))
-    y_offset += d.size[1]
 
 #%%
 def _ocr2num(ocr, outtype):
@@ -196,19 +178,22 @@ def _ocr2num(ocr, outtype):
                           
     return list(map(str2f, re.findall("\d+\.*\d*", ocr)))
     
-def img2values(img_path, col_names=col_names, bnd_box=bnd_box):
-    """returns values for a PIL Image that is cropped to show only 1 column of data
-    if outtype in (int, float) returns median numeric prediction 
-        of 3 different threshold preprocessing
-    outtype: ID's column and useful for constraining # of periods
+def img2values(img_path, col_names=col_names, header_bnd_box=header_bnd_box):
+    """returns values for a PIL Image screenshot
+    col_names: names of each column (eg. ["Strikes", ..., "Gamma"])
+    header_bnd_box: the boundries for the header image
+             only the vertical, x=k boundaries are kept 
+             (horizontal y=k are specific to header; 
+              replaced with horizontal y=k that depend on final data img height)
     """
     im = Image.open(img_path)
     sw, sh = im.size
-    split = list(pygu.locateAll("header_down_arrow.png", img_path))
-    #need to cut desktop icon bar at bottom; else will be counted as a row
-    split_tops = [t for _,t,*_ in split] + [sh-63]
     
-    #only get data rows; cutout top headers, any subheaders in the middle of text
+    #only get data rows; cutout any subheaders in the middle of text 
+    # eg. "Puts Mar 19, 2021 (Fri: 03 days)" get removed
+    data_pieces = list(pygu.locateAll("header_down_arrow.png", img_path))
+    #need to cut desktop icon bar at bottom; else will be counted as a row
+    split_tops = [t for _,t,*_ in data_pieces] + [sh-63]
     data_im = []
     for t1,t2 in zip(split_tops[:-1], split_tops[1:]): 
         data_im += [im.crop((0, t1+25, sw, t2-5))]
@@ -221,8 +206,9 @@ def img2values(img_path, col_names=col_names, bnd_box=bnd_box):
         y_offset += d.size[1]
     
     vals = []
+    #from header name only to seperating data columns
     header2clipped = lambda bx:  (boundry_sz + bx[0], 0, boundry_sz + bx[2], new_h)
-    for bx,n in zip(bnd_box, col_names):
+    for bx,n in zip(header_bnd_box, col_names):
         crop_im = new_im.crop(header2clipped(bx))
         outtype = int if  n in ("Volume", "Open Int")  \
                   else str if n == 'Symbol' \
@@ -299,7 +285,7 @@ df.head()
 import math
 #WARNING: bottom, right sides of img in MSFT display have a bevel added; not actually on img. 
 #       eg Image.fromarray(255*np.ones((500,500))).show()
-crop_im = new_im.crop(header2clipped(bnd_box[5]))
+crop_im = new_im.crop(header2clipped(header_bnd_box[9]))
 
 cv_im = np.array(crop_im)
 result = cv_im.copy()
@@ -354,7 +340,11 @@ contour2box = lambda c: (0, #min(c[:,0]),
                          crop_im.size[1] - min(c[:,1]) + 3)#left top right bottom
 #contour x,y but cv2 images are y,x
 contour2cv = lambda c: (slice(min(c[:,1])-3, max(c[:,1])+3), #y
-                        slice(min(c[:,0]), max(c[:,0])))
+                        slice(min(c[:,0]+5), max(c[:,0]))#x, don't get a right side bar
+                        )
+# _draw_contours(contours, cv_im)
+# _sh(cv_im[contour2cv(contours[8])])
+##%%temp break
 
 im_data = []
 _v = []
@@ -362,8 +352,15 @@ outtype = int
 for c in contours:
     b = contour2box(c) 
     im_data += [crop_im.crop(b)]
-    _im = cv_im[contour2cv(c)] 
+    _im = cv_im[contour2cv(c)] #all digits 
+    # _im = cv_im[cv2.boundingRect(c)]
+    
     #need to improve pre-processing
+    thresh = cv2.threshold(_im, 0, 255,
+                           cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)[1]
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (1, 5))
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
+    
     
     my_config = '--psm 7 digits tessedit_char_whitelist=0123456789' #7 = single entry
     
@@ -401,18 +398,148 @@ for c in contours:
     s, n_cnt = Counter(preds).most_common(1)[0]
     # if n_cnt ==1:
     #     print("All disagree")
+    
+    
     _v += [s]
 _concat_img(im_data, how='v').show()
 _v
+#if doesn't work change font: streetsmart edge change font
+#%% need to improve pre-processing
+digits = []
+bad = []
+bad_roi=[]
+for bx in header_bnd_box[2:]:#column sep
+    crop_im = new_im.crop(header2clipped(bx))
+    
+    cv_im = np.array(crop_im)
+    result = cv_im.copy()
+    
+    _, th_l = cv2.threshold(cv_im, 120, 255, cv2.THRESH_BINARY)
+    #erode, dilate have backwards effects, since will invert colors. erode makes more black->more white
+    kernel_hor = np.ones((5, 50), dtype=np.uint8)
+    erode = cv2.erode(th_l, kernel_hor)#black squares where each number is
+    
+    kernel_ones = np.ones((3, 5), dtype=np.uint8)
+    blocks = cv2.dilate(erode, kernel_ones)  
+    
+    #looking for white holes in black background, so colors inverted
+    contours, hierarchy  = cv2.findContours(~blocks, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    
+    #WARNING: cv2 y=0 is bottom, Image y=0 is top.
+    contours = [c.reshape(-1,2) for c in contours]
+    
+    for c in contours:#row contounrs
+        _im = cv_im[contour2cv(c)] #all digits   
+
+        ref = cv2.threshold(_im, 200, 255, cv2.THRESH_BINARY_INV)[1]
+        refCnts = cv2.findContours(ref.copy(),
+                                   cv2.RETR_EXTERNAL,
+         	                       cv2.CHAIN_APPROX_SIMPLE)
+        refCnts = refCnts[0] if len(refCnts) == 2 else refCnts[1]
+        
+        ##sort contours L2R
+        boundingBoxes = [cv2.boundingRect(cn) for cn in refCnts]
+        cnts, boundingBoxes = zip(*sorted(zip(refCnts, boundingBoxes),
+                                         key = lambda b:b[1][0],
+                                         reverse=False))
+        for (i, cn) in enumerate(cnts):#digit sep
+            # compute the bounding box for the digit, extract it, and resize
+            # it to a fixed size
+            (x, y, w, h) = cv2.boundingRect(cn)
+            #can remove comma, period either 2 or 4 based on col_name, - from call vs. put
+            if w > 10 and h > 5:
+                bad += [(bx, c, i)]
+                roi = ref[y:y + h, x:x + w]
+                roi = cv2.resize(roi, (57, 88))
+                bad_roi += [roi]
+                print(w)
+            if h > 5:
+                roi = ref[y:y + h, x:x + w]
+                roi = cv2.resize(roi, (57, 88))
+                # update the digits dictionary, mapping the digit name to the ROI
+                digits += [roi]
+
+# Image.fromarray(ref).show()
+# _make_sq_img(digits).show() #lots of doubled chars
+# _draw_contours(cnts, _im)
+# [pytesseract.image_to_string(i, config= my_config) for i in digits]
+# np.unique(np.array(digits), axis=0, return_counts=1)[1]
+#%% get bad image
+#issue of multiple digits per box
+bad_roi = []
+for ix, (bx, c, i) in enumerate(bad): 
+    # if ix != 62:
+    #     continue
+    crop_im = new_im.crop(header2clipped(bx))
+    cv_im = np.array(crop_im)
+    _im = cv_im[contour2cv(c)] #all digits   
+    
+    _im = cv2.resize(_im, (500, 1000))
+    ref = cv2.threshold(_im, 200, 255, cv2.THRESH_BINARY_INV)[1]
+    ref = cv2.erode(ref, np.ones((20,20)))
+    
+    refCnts = cv2.findContours(ref.copy(),
+                               cv2.RETR_EXTERNAL,
+     	                       cv2.CHAIN_APPROX_SIMPLE)
+    
+    refCnts = refCnts[0] if len(refCnts) == 2 else refCnts[1]
+    
+    ##sort contours L2R
+    boundingBoxes = [cv2.boundingRect(cn) for cn in refCnts]
+    cnts, boundingBoxes = zip(*sorted(zip(refCnts, boundingBoxes),
+                                     key = lambda b:b[1][0],
+                                     reverse=False))
+    
+    # i = 0
+    cn = cnts[i]
+
+    (x, y, w, h) = cv2.boundingRect(cn)
+    roi = ref[y:y + h, x:x + w]
+    roi = cv2.resize(roi, (57, 88))
+    # update the digits dictionary, mapping the digit name to the ROI
+    bad_roi += [roi]
+    # Image.fromarray(roi).show()
+    
+    # _draw_contours(cnts[i], _im)
+
+# _sh(bad_roi[-1])    
+_make_sq_img(bad_roi).show()
+
+
+
+#%% improve proc for digits of bad cell img 
+crop_im = new_im.crop(header2clipped(header_bn_box[]))
+cv_im = np.array(crop_im)
+result = cv_im.copy()
+    
+_, th_l = cv2.threshold(cv_im, 120, 255, cv2.THRESH_BINARY)
+#erode, dilate have backwards effects, since will invert colors. erode makes more black->more white
+kernel_hor = np.ones((5, 50), dtype=np.uint8)
+erode = cv2.erode(th_l, kernel_hor)#black squares where each number is
+
+kernel_ones = np.ones((3, 5), dtype=np.uint8)
+blocks = cv2.dilate(erode, kernel_ones)  
+
+#looking for white holes in black background, so colors inverted
+contours, hierarchy  = cv2.findContours(~blocks, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+#WARNING: cv2 y=0 is bottom, Image y=0 is top.
+contours = [c.reshape(-1,2) for c in contours]
+    
+# sh(_im)
+
+
+
+_draw_contours(cnts, cv_im)
 #%%
 # Image.fromarray(cv_im[contour2cv(contours[4])]).show()
-sh = lambda m: Image.fromarray(m).show()
+
 _im = cv_im[contour2cv(contours[-1])]
 blur = cv2.GaussianBlur(_im,(3,3),0)
 ret3,th3 = cv2.threshold(_im,0,255,cv2.THRESH_BINARY+cv2.THRESH_OTSU)
 pytesseract.image_to_string(th3, config= my_config)
 #%% scrap
-# crop_im = new_im.crop(header2clipped(bnd_box[5]))
+# crop_im = new_im.crop(header2clipped(header_bnd_box[5]))
 crop_im = new_im.crop((30, 0, sw-100, 490))
 cv_im = np.array(crop_im)
 result = cv_im.copy()
@@ -441,7 +568,7 @@ Image.fromarray(thresh).show()
 #%%
 # import imutils.perspective
 
-crop_im = new_im.crop(header2clipped(bnd_box[2]))
+crop_im = new_im.crop(header2clipped(header_bnd_box[2]))
 
 # thres_lvl = 90
 # _, thresh_im = cv2.threshold(cv_im, thres_lvl, 255, cv2.THRESH_BINARY)
@@ -524,23 +651,15 @@ Image.fromarray(result).show()
 pytesseract.image_to_string(result)
 # blur = cv2.GaussianBlur(crop_im)
 # edge = cv2.Canny(blur, 75, 200)
-#%%
-# pytesseract.image_to_string(thres_im)
-Image.fromarray(thresh_im).show()
-# Image.fromarray(close_im).show()
-# Image.fromarray(result).show()
 
-#%%
-im = Image.open("data_pics\img0.png").convert('LA')
-draw = ImageDraw.Draw(im)
-w,h = im.size
-for ix in (top,top-10,top-20): 
-    draw.line((0, ix, 1920,ix), fill=0, width=2)
-im.show()
 
 
 #%%  #helpful asides
+
+_sh = lambda m: Image.fromarray(m).show()
+
 def get_position():
+    "print from pygu: curosr positions"
     pos_l = []
     for _ in range(4):
         time.sleep(3)
@@ -556,6 +675,10 @@ def _concat_img(data_im, how='h'):
     """conatenate a list of Images
     how: h for horizontal, v for vertical
     """
+    if not isinstance(data_im[0], Image.Image):
+        print("casting to Image")
+        data_im = [Image.fromarray(i) for i in data_im]
+        
     if how == 'v':
         new_h = sum([d.size[1] for d in data_im])
         new_w = max([d.size[0] for d in data_im])
@@ -572,6 +695,42 @@ def _concat_img(data_im, how='h'):
         elif how == 'h':
             x_offset += d.size[0]            
     return new_im
+
+def _make_sq_img(data_im):
+    """a list of Images into a rectangle in row order
+    data_im: list of Image of EQUAL SIZE
+    """
+    if not isinstance(data_im[0], Image.Image):
+        print("casting to Image")
+        data_im = [Image.fromarray(i) for i in data_im]
+
+    iw, ih = data_im[0].size
+    assert all((iw,ih) == i.size for i in data_im)
+    n = len(data_im)
+    xs = math.ceil(math.sqrt(n))
+    ys = math.ceil(n/xs)
+
+    new_im = Image.new('L', (xs*iw, ys*ih))
+    y_offset = 0
+    x_offset = 0
+    for ix,d in enumerate(data_im):
+        new_im.paste(d, (x_offset, y_offset))
+        x_offset += iw
+        if ix%xs == xs-1:
+            y_offset += ih
+            x_offset = 0
+            
+    if xs*ys - len(data_im) > 0:
+        print(f"Last: {xs*ys-len(data_im)} sqs in Image are empty" )
+    return new_im
+
+def _draw_contours(cnts, _im):
+    "draws contors on copy of _im, a np.array"
+    result = _im.copy()
+    for cn in cnts:
+        # print("horizontal: ",c)
+        cv2.drawContours(result, [cn], -1, (36,255,12), 2)
+    Image.fromarray(result).show()   
 
 #%%
 #scrape
