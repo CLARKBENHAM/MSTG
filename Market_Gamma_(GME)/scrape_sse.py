@@ -6,6 +6,7 @@ import lxml.html
 import requests
 # import requests_cache
 import re
+import math
 
 from datetime import datetime
 import time
@@ -24,12 +25,22 @@ import pydirectinput
 
 from PIL import Image, ImageChops, ImageDraw
 
-from pytesseract import pytesseract
+# from pytesseract import pytesseract #this didn't work even with single char segmentation
+# pytesseract.tesseract_cmd = "c:\\Program Files\\Tesseract-OCR\\tesseract.exe"
 
 from skimage.filters import threshold_local
 import cv2
 
-pytesseract.tesseract_cmd = "c:\\Program Files\\Tesseract-OCR\\tesseract.exe"
+import matplotlib.pyplot as plt
+
+
+# to import calamari-OCR
+#download https://github.com/Calamari-OCR/calamari_models/tree/master/uw3-modern-english
+#with https://downgit.github.io/#/home
+#calamari-predict --checkpoint C:\Users\student.DESKTOP-UT02KBN\Downloads\uw3-modern-english\uw3-modern-english\0.ckpt --files "MSTG\Market_Gamma_(GME)\del.png"
+#see https://github.com/Calamari-OCR/calamari/blob/master/calamari_ocr/test/test_prediction.py
+#for code
+
 sys.exit()
 if __name__ == "__main__":
     #need to start w/ SSE 2nd from bottom row selected
@@ -153,14 +164,119 @@ del col_names[bad_ix], header_bnd_box[bad_ix],
 del  col_names[bad_ix2-1], header_bnd_box[bad_ix2-1]
 
 name2ix = {n:ix for ix,n in enumerate(col_names)}
-#%% temp
- #from header clipping to screen shot
+
+# from header clipping to screen shot
 header2screen = lambda b: (b[0]+boundry_sz, head_bot, b[2]+boundry_sz, sh)
 screen_bnd = [header2screen(bx) for bx in header_bnd_box]
-vals = []
-for img in os.listdir("data_pics"):
-    break
 
+#%%
+def _crop2row(im, bnd, shrink_w = 0):
+    """returns a single row based on bounds; preserving im width* 
+    shrink_w: extra amount taken off left & Right beyond limits
+    bdn: (left, top, right, bottom)"""
+    bnd = (shrink_w, 
+           bnd[1],
+           im.size[0] - shrink_w,
+           bnd[3])
+    return im.crop(bnd)
+
+def _crop2col(im, bnd, shrink_h = 0):
+    """returns a single col based on bounds; preserving im height
+    bdn: (left, top, right, bottom)"""    
+    bnd = (bnd[0],
+           shrink_h,
+           bnd[2],
+           im.size[1]-shrink_h)
+    return im.crop(bnd)
+
+def _crop2cell(im, col_bnd, row_bnd):
+    """
+    Takes a column bound, a row bound and returns the intersection
+    """
+    col_w = col_bnd[2] - col_bnd[0]
+    row_w = row_bnd[2] - row_bnd[0]
+    assert col_w < row_w, "Think have called with col & row order flipped; should be col then row"
+    bnd = (col_bnd[0],
+           row_bnd[1],
+           col_bnd[2],
+           row_bnd[3])
+    return im.crop(bnd)
+
+def _cut_subheaders(img_path):
+    """only get data rows; cutout any subheaders in the middle of text 
+     eg. "Puts Mar 19, 2021 (Fri: 03 days)" get removed
+     """
+    im = Image.open(img_path)
+    sw, sh = im.size
+    data_pieces = list(pygu.locateAll("header_down_arrow.png", img_path))
+    #need to cut desktop icon bar at bottom; else will be counted as a row
+    split_tops = [t for _,t,*_ in data_pieces] + [sh-63]
+    data_im = []
+    for t1,t2 in zip(split_tops[:-1], split_tops[1:]): 
+        data_im += [im.crop((0, t1+25, sw, t2-5))]
+    new_h = sum([d.size[1] for d in data_im])
+    new_w = sw
+    new_im = Image.new('L', (new_w, new_h))
+    y_offset = 0
+    for d in data_im:
+        new_im.paste(d, (0, y_offset))
+        y_offset += d.size[1]
+    return new_im
+
+def _make_row_boundries(new_im):
+    """
+    crop_im: pil image column data 
+    returns list of row boundries for any image with the same height
+        (i.e. #of subheaders cut out)
+    """
+    crop_im = new_im.crop(header2clipped(header_bnd_box[1]))
+    cv_im = np.array(crop_im)
+    result = cv_im.copy()
+    
+    _, th_l = cv2.threshold(cv_im, 120, 255, cv2.THRESH_BINARY)
+    #erode, dilate have backwards effects, since will invert colors. erode makes more black->more white
+    kernel_hor = np.ones((5, 50), dtype=np.uint8)#each row is ~26 pixels tall
+    erode = cv2.erode(th_l, kernel_hor)#black squares where each number is
+    
+    kernel_ones = np.ones((3, 5), dtype=np.uint8)
+    blocks = cv2.dilate(erode, kernel_ones)
+    
+    #looking for white holes in black background, so colors inverted
+    contours, hierarchy  = cv2.findContours(~blocks, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    # Image.fromarray(cv2.drawContours(cv_im, contours, -1, (0,255,0), 3)).show()
+    
+    #WARNING: cv2 y=0 is bottom, Image y=0 is top.
+    contours = [c.reshape(-1,2) for c in contours]
+
+    #left top right bottom
+    contour2box = lambda c: (0, #min(c[:,0]),
+                             new_im.size[1] - max(c[:,1]) -3,
+                             new_im.size[0], #max(c[:,0]), 
+                             new_im.size[1] - min(c[:,1]) + 3)
+    return [contour2box(c) for c in contours] 
+
+
+img_path = "data_pics\img0.png"
+new_im = _cut_subheaders(img_path)
+
+full_row_bnds = _make_row_boundries(new_im)
+
+# full_row = new_im.crop(full_row_bnds[0]).show()
+# full_row.save("data_table.png")
+# full_row.show()
+# _crop2col(new_im, header_bnd_box[1], shrink_h = 29).show()
+# _crop2col(new_im, header_bnd_box[1], shrink_h = 0).show()
+
+# single_cell = _crop2cell(new_im, header_bnd_box[1], full_row_bnds[1])
+# single_cell.show()
+# single_cell.save("data_table.png")
+#calamari-predict --checkpoint C:\Users\student.DESKTOP-UT02KBN\Downloads\uw3-modern-english\uw3-modern-english\0.ckpt --files "MSTG\Market_Gamma_(GME)\data_table.png"
+
+#pytesseract without config can read symbol single_cell better
+
+#idea: increase region around char when segment from roi
+#      increase text size on screen
+#      roll own char recognition from k-means for digits
 #%%
 def _ocr2num(ocr, outtype):
     """returns numeric list from generated output and output type 
@@ -222,7 +338,10 @@ def img2values(img_path, col_names=col_names, header_bnd_box=header_bnd_box):
         
         #median numeric prediction of 3 different threshold preprocessers
         cv_im = np.array(crop_im)    
-        my_config = '--psm 6 digits tessedit_char_whitelist=0123456789\\.\\,'
+        if n == 'Symbol':
+            my_config = '--psm 6'
+        else:
+            my_config = '--psm 6 digits tessedit_char_whitelist=0123456789\\.\\,'
         
         ocr1 = pytesseract.image_to_string(cv_im, config= my_config)
         
@@ -251,38 +370,46 @@ def img2values(img_path, col_names=col_names, header_bnd_box=header_bnd_box):
                                      ).most_common(1)[0]
             ocr_names = ("No Preprocess", "Adative Gaussian", "Otsu")
             bad_n = [ocr_names[i] for i in range(3) 
-                     if ocr_l[i] != mxl] #does better than common_len
+                     if ocr_l[i] != common_len] #does better than common_len
             if nl > 1:
                 print(f"warning ocr processes {bad_n}, failed for {n} on {img_path}")
             else:
                 print(f"Warning ALL ocr processes Disagreed for {n} on {img_path}")
             s = preds[ocr_l.index(mxl)]
             
-        #decimal placement check; ERRORS on OPEN VOLUME
-        sum_seg = 0
-        out = []
-        for ix, (t1,t2) in enumerate(zip(split_tops[:-1], split_tops[1:])): 
-            seg_sz = (len(s) * (t2-t1))//(split_tops[-1] - split_tops[0]) 
-            if len(split) -2 == ix:
-                segment = s[sum_seg:]
-            else:
-                segment = s[sum_seg:seg_sz]
-            for ix in range(1, len(segment)-1):
-                while segment[ix]*8 > segment[ix-1] and segment[ix]*8 > segment[ix+1]:
-                    segment[ix] /= 10
-                while segment[ix]*8 < segment[ix-1] and segment[ix]*8 < segment[ix+1]:
-                    segment[ix] *= 10
-            out += segment
-            sum_seg += seg_sz
-        vals += [out]
+        # #decimal placement check; ERRORS on OPEN VOLUME
+        # sum_seg = 0
+        # out = []
+        # for ix, (t1,t2) in enumerate(zip(split_tops[:-1], split_tops[1:])): 
+        #     seg_sz = (len(s) * (t2-t1))//(split_tops[-1] - split_tops[0]) 
+        #     if len(data_pieces) -2 == ix:
+        #         segment = s[sum_seg:]
+        #     else:
+        #         segment = s[sum_seg:seg_sz]
+        #     for ix in range(1, len(segment)-1):
+        #         while segment[ix]*8 > segment[ix-1] and segment[ix]*8 > segment[ix+1]:
+        #             segment[ix] /= 10
+        #         while segment[ix]*8 < segment[ix-1] and segment[ix]*8 < segment[ix+1]:
+        #             segment[ix] *= 10
+        #     out += segment
+        #     sum_seg += seg_sz
+        vals += [s]
     return vals
 
-vals = img2values(img)
+img_path = 'del.png'
+vals = img2values(img_path)
 df = pd.DataFrame(list(zip(*vals)))
 df.head()
-#%% extra info by cell; split on row lines
-#each row is ~26 pixels
-import math
+#%% extra info by cell; 
+def proc_split_on_row_lines(new_im):
+    """
+    Split data image by col&row into each individal cell
+    Returns 
+    -------
+    df from read image
+
+    """
+    pass
 #WARNING: bottom, right sides of img in MSFT display have a bevel added; not actually on img. 
 #       eg Image.fromarray(255*np.ones((500,500))).show()
 crop_im = new_im.crop(header2clipped(header_bnd_box[9]))
@@ -292,41 +419,11 @@ result = cv_im.copy()
 
 _, th_l = cv2.threshold(cv_im, 120, 255, cv2.THRESH_BINARY)
 #erode, dilate have backwards effects, since will invert colors. erode makes more black->more white
-kernel_hor = np.ones((5, 50), dtype=np.uint8)
+kernel_hor = np.ones((5, 50), dtype=np.uint8)#each row is ~26 pixels tall
 erode = cv2.erode(th_l, kernel_hor)#black squares where each number is
 
 kernel_ones = np.ones((3, 5), dtype=np.uint8)
 blocks = cv2.dilate(erode, kernel_ones)
-# Image.fromarray(blocks).show() 
-
-# blocks[:,-5:] = 255#some border boundries get written to white size 
-
-# kernel_hor = np.ones((5, 20))
-# kernel_hor[0,:] *= -1#np.uint8(0)
-# kernel_hor[-1,:] *= -1#np.uint8(0)
-# kernel_v = np.array([[-1,-1,-1]*5, 
-#                      [0,0,0]*5,
-#                      [1,1,1]*5])
-# erode = cv2.filter2D(blocks, -1, kernel_v)
-# [2:-2, 2:-20] #some boundry siz
-
-# edges = cv2.Canny(~blocks, 80, 120)
-# lines = cv2.HoughLinesP(edges, 1, math.pi/2, 2, None, 30, 1);
-# for line in lines[0]:
-#     pt1 = (line[0],line[1])
-#     pt2 = (line[2],line[3])
-#     cv2.line(cv_im, pt1, pt2, (0,0,255), 3)
-# Image.fromarray(cv_im).show() 
-
-# # Detect horizontal lines
-# horizontal_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (40,1))
-# detect_horizontal = cv2.morphologyEx(~blocks, cv2.MORPH_OPEN, horizontal_kernel, iterations=2)
-# cnts = cv2.findContours(detect_horizontal, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-# cnts = cnts[0] if len(cnts) == 2 else cnts[1]
-# for c in cnts:
-#     print("horizontal: ",c)
-#     cv2.drawContours(result, [c], -1, (36,255,12), 2)
-# Image.fromarray(result).show()     
 
 #looking for white holes in black background, so colors inverted
 contours, hierarchy  = cv2.findContours(~blocks, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
@@ -344,7 +441,6 @@ contour2cv = lambda c: (slice(min(c[:,1])-3, max(c[:,1])+3), #y
                         )
 # _draw_contours(contours, cv_im)
 # _sh(cv_im[contour2cv(contours[8])])
-##%%temp break
 
 im_data = []
 _v = []
@@ -361,7 +457,7 @@ for c in contours:
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (1, 5))
     thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel)
     
-    
+    #will be bad config for 'Symbol'
     my_config = '--psm 7 digits tessedit_char_whitelist=0123456789' #7 = single entry
     
     #?: 1 better on gray, 2 on white?
@@ -403,93 +499,248 @@ for c in contours:
     _v += [s]
 _concat_img(im_data, how='v').show()
 _v
-#if doesn't work change font: streetsmart edge change font
+#grib: 2401.2855 gets split into 2401, 2855 by each
+
 #%% need to improve pre-processing
-digits = []
-bad = []
-bad_roi=[]
-for bx in header_bnd_box[2:]:#column sep
-    crop_im = new_im.crop(header2clipped(bx))
-    
-    cv_im = np.array(crop_im)
-    result = cv_im.copy()
-    
-    _, th_l = cv2.threshold(cv_im, 120, 255, cv2.THRESH_BINARY)
-    #erode, dilate have backwards effects, since will invert colors. erode makes more black->more white
-    kernel_hor = np.ones((5, 50), dtype=np.uint8)
-    erode = cv2.erode(th_l, kernel_hor)#black squares where each number is
-    
-    kernel_ones = np.ones((3, 5), dtype=np.uint8)
-    blocks = cv2.dilate(erode, kernel_ones)  
-    
-    #looking for white holes in black background, so colors inverted
-    contours, hierarchy  = cv2.findContours(~blocks, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    
-    #WARNING: cv2 y=0 is bottom, Image y=0 is top.
-    contours = [c.reshape(-1,2) for c in contours]
-    
-    for c in contours:#row contounrs
-        _im = cv_im[contour2cv(c)] #all digits   
-
-        ref = cv2.threshold(_im, 200, 255, cv2.THRESH_BINARY_INV)[1]
-        refCnts = cv2.findContours(ref.copy(),
-                                   cv2.RETR_EXTERNAL,
-         	                       cv2.CHAIN_APPROX_SIMPLE)
-        refCnts = refCnts[0] if len(refCnts) == 2 else refCnts[1]
+def split_into_digit(new_im, header_bnd_box):
+    """
+    Split data image by col&row and into each individal digit
+    ignores symbol column since "M" is 14 pix wide, same legnth as -1
+    Returns 
+    -------
+    {col_name:
+        list of row cell in that col
+            list of image of digits in that row cell
+            }
+    """
+    # pass
+    digits = []
+    bad = []
+    bad_roi=[]
+    ws = []
+    vals = {}
+    small_roi = []
+    for ix, bx in enumerate(header_bnd_box):#column sep
+        if ix == 1:#change config
+            continue
+        name = col_names[ix]
+        crop_im = new_im.crop(header2clipped(bx))
         
-        ##sort contours L2R
-        boundingBoxes = [cv2.boundingRect(cn) for cn in refCnts]
-        cnts, boundingBoxes = zip(*sorted(zip(refCnts, boundingBoxes),
-                                         key = lambda b:b[1][0],
-                                         reverse=False))
-        for (i, cn) in enumerate(cnts):#digit sep
-            # compute the bounding box for the digit, extract it, and resize
-            # it to a fixed size
-            (x, y, w, h) = cv2.boundingRect(cn)
-            #can remove comma, period either 2 or 4 based on col_name, - from call vs. put
-            if w > 10 and h > 5:
-                bad += [(bx, c, i)]
-                roi = ref[y:y + h, x:x + w]
-                roi = cv2.resize(roi, (57, 88))
-                bad_roi += [roi]
-                print(w)
-            if h > 5:
-                roi = ref[y:y + h, x:x + w]
-                roi = cv2.resize(roi, (57, 88))
-                # update the digits dictionary, mapping the digit name to the ROI
-                digits += [roi]
+        cv_im = np.array(crop_im)
+        result = cv_im.copy()
+        
+        _, th_l = cv2.threshold(cv_im, 120, 255, cv2.THRESH_BINARY)
+        #erode, dilate have backwards effects, since will invert colors. erode makes more black->more white
+        kernel_hor = np.ones((5, 50), dtype=np.uint8)
+        erode = cv2.erode(th_l, kernel_hor)#black squares where each number is
+        
+        kernel_ones = np.ones((3, 5), dtype=np.uint8)
+        blocks = cv2.dilate(erode, kernel_ones)  
+        
+        #looking for white holes in black background, so colors inverted
+        contours, hierarchy  = cv2.findContours(~blocks, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        
+        #WARNING: cv2 y=0 is bottom, Image y=0 is top.
+        contours = [c.reshape(-1,2) for c in contours]
+        col_vals = []
+        for c in contours:#row contounrs
+            _im = cv_im[contour2cv(c)] #all digits   
+    
+            ref = cv2.threshold(_im, 200, 255, cv2.THRESH_BINARY_INV)[1]
+            refCnts = cv2.findContours(ref.copy(),
+                                       cv2.RETR_EXTERNAL,
+             	                       cv2.CHAIN_APPROX_SIMPLE)
+            refCnts = refCnts[0] if len(refCnts) == 2 else refCnts[1]
+            
+            ##sort contours L2R
+            boundingBoxes = [cv2.boundingRect(cn) for cn in refCnts]
+            cnts, boundingBoxes = zip(*sorted(zip(refCnts, boundingBoxes),
+                                             key = lambda b:b[1][0],
+                                             reverse=False))
+            row_digits = []
+            for (i, cn) in enumerate(cnts):#digit sep
+                # compute the bounding box for the digit, extract it, and resize
+                # it to a fixed size
+                (x, y, w, h) = cv2.boundingRect(cn)
+                #can remove comma, period either 2 or 4 based on col_name, - from call vs. put
+                if w > 10 and h > 5:
+                    #all >=17, but some have negative sign included
+                    roi = ref[y:y + h, x:x + w]
+                    v_sum = np.sum(roi, axis=0)
+                    char_w = (8,9)#possible character widths
+                    n_chars = w //min(char_w)
+                    is_right_aligned = name != 'Strikes'
+                    split_digits = []
+                    if is_right_aligned:
+                        #don't split whole img to exclude neg sign
+                        r_border = w
+                        while r_border >= min(char_w):
+                            char_range = slice(max(r_border - char_w[1],0),
+                                               r_border - char_w[0] + 1)
+                            sep_ix = v_sum[char_range].argmin()
+                            v_sep = max(r_border - char_w[1],0) + sep_ix
+                            n_roi = roi[:,   v_sep: r_border]
+                            n_roi = cv2.resize(n_roi, (57, 88))
+                            r_border = v_sep
+                            split_digits  += [n_roi]
+                        split_digits = split_digits[::-1]#read in r2l
+                    else:
+                        char_w = (8,10)#strikes are bolded
+                        r_border = 0
+                        while r_border <= w - min(char_w):
+                            char_range = slice(r_border + char_w[0],
+                                               r_border + char_w[1]+1)
+                            sep_ix = v_sum[char_range].argmin()
+                            v_sep = r_border + char_w[0] + sep_ix
+                            n_roi = roi[:,   r_border:v_sep]
+                            n_roi = cv2.resize(n_roi, (57, 88))
+                            r_border = v_sep  
+                            split_digits  += [n_roi]
+                            
+                    digits += split_digits
+                    row_digits += split_digits            
+                    bad_roi += split_digits
+                    
+                    # #issue ploting troughts: 00 is thicker where touch than midline of 0
+                    bad += [(bx, c, i)]
+                    roi = ref[y:y + h, x:x + w]
+                    roi = cv2.resize(roi, (57, 88))
+                    # bad_roi += [roi]
+                    print(w)
+                elif h > 5 and w >=6:
+                    #some invalid white sqs with w<6 
+                    ws += [w]
+                    roi = ref[y:y + h, x:x + w]
+                    roi = cv2.resize(roi, (57, 88))
+                    # update the digits dictionary, mapping the digit name to the ROI
+                    digits += [roi]
+                    row_digits += [roi]
+                    
+            col_vals += [row_digits]
+        vals[name] = col_vals[::-1]
+    return vals, bad_roi
 
+vals, bad_roi = split_into_digit(new_im, header_bnd_box)
+
+def _check_split_into_digits(new_im, vals):
+    h = len(list(vals.values())[0])*88
+    col_sep = Image.fromarray(np.ones((h, 50)))
+    insert_col_sep = lambda m: _concat_img([m, col_sep], how='h')
+    _concat_img([
+        insert_col_sep(
+            _concat_img([
+                _concat_img(row_l, how='h')
+                          for row_l in col_l], 
+                        how='v'))
+        for col_l in list(vals.values())],
+                how='h').show()
+    new_im.show()
+
+_check_split_into_digits(new_im, vals)
+
+# _make_sq_img(small_roi).show()
+# _make_sq_img(bad_roi).show()
 # Image.fromarray(ref).show()
 # _make_sq_img(digits).show() #lots of doubled chars
 # _draw_contours(cnts, _im)
+# np.unique(np.array(digits), axis=0, return_counts=1)[1] #digits non-unique
 # [pytesseract.image_to_string(i, config= my_config) for i in digits]
-# np.unique(np.array(digits), axis=0, return_counts=1)[1]
+
+#%%
+def proc_single_digits(vals):
+    #pytesseract isn't accurrant enough for this
+    """
+    OCR's individual digits into the table they represent
+    Parameters
+    ----------
+    vals : {col_name: [[digits in cell] cell in row]}
+
+    Returns
+    -------
+    pd DataFrame
+    """
+    pass
+n_decimal ={'Strikes': 2,#{n:2 if ix <5 else 0 if ix < 7 else 4 for ix,n in enumerate(col_names)}
+         'Symbol': 2,
+         'Bid': 2,
+         'Midpoint': 2,
+         'Ask': 2,
+         'Volume': 0,
+         'Open Int': 0,
+         'Delta': 4,
+         'Vega': 4,
+         'IV Ask': 4,
+         'IV Bid': 4,
+         'Rho': 4,
+         'Theta': 4,
+         'IV': 4,
+         'Gamma': 4}
+my_config = '--psm 10 digits tessedit_char_whitelist=0123456789' #10 single char
+def _proc_ocr(d, outtype):
+    "np.array to single digit cast"
+    # base = np.zeros((100,99), dtype=np.uint8) #outlining in black makes worse?
+    # base[6:-6, 21:-21] = d
+    ocr = pytesseract.image_to_string(Image.fromarray(d), 
+                                      config= my_config)
+    try:
+        return str(int(_ocr2num(ocr, outtype)[0]))
+    except:
+        print("Failed output of: ", str(ocr))
+        return ''
+    
+out = []
+for name, col_l in vals.items():
+    row_vals = []
+    for row_l in col_l:
+        outtype = int if n_decimal[name] == 0 else float
+        cell_vals = [_proc_ocr(d, outtype) for d in row_l]
+        row_val = outtype("".join(cell_vals))
+        
+        row_val /= 10**n_decimal[name]
+        is_put = False#GRIB!!
+        if name == 'Theta':
+            row_val *= -1
+        elif name in ('Delta', 'Rho') and is_put:
+            row_val *= -1
+        row_vals += [row_val]
+    out += [row_vals]
+    # return pd.DataFrame(out, columns = vals.keys()) 
+
+# _df = proc_single_digits(vals)
+
+
 #%% get bad image
 #issue of multiple digits per box
 bad_roi = []
+neg_contours = []
+nonneg_contours =[]
 for ix, (bx, c, i) in enumerate(bad): 
-    # if ix != 62:
-    #     continue
+    # if ix not in [28, 29, 30, 31, 32, 34, 35, 37, 38, 40]:
     crop_im = new_im.crop(header2clipped(bx))
     cv_im = np.array(crop_im)
     _im = cv_im[contour2cv(c)] #all digits   
     
-    _im = cv2.resize(_im, (500, 1000))
+    # _im = cv2.resize(_im, (500, 1000)) #doesn't really help
+    # ref = cv2.dilate(ref, np.ones((10,10)))
+
     ref = cv2.threshold(_im, 200, 255, cv2.THRESH_BINARY_INV)[1]
-    ref = cv2.erode(ref, np.ones((20,20)))
-    
     refCnts = cv2.findContours(ref.copy(),
                                cv2.RETR_EXTERNAL,
-     	                       cv2.CHAIN_APPROX_SIMPLE)
+     	                       cv2.CHAIN_APPROX_SIMPLE)#only returns boxes
     
     refCnts = refCnts[0] if len(refCnts) == 2 else refCnts[1]
     
+    if ix in [28, 29, 30, 31, 32, 34, 35, 37, 38, 40]:
+        neg_contours += [refCnts]
+    else:
+        nonneg_contours += [refCnts]
+        
     ##sort contours L2R
     boundingBoxes = [cv2.boundingRect(cn) for cn in refCnts]
     cnts, boundingBoxes = zip(*sorted(zip(refCnts, boundingBoxes),
                                      key = lambda b:b[1][0],
                                      reverse=False))
-    
+
     # i = 0
     cn = cnts[i]
 
@@ -502,10 +753,24 @@ for ix, (bx, c, i) in enumerate(bad):
     
     # _draw_contours(cnts[i], _im)
 
+# _sh(_im)
 # _sh(bad_roi[-1])    
-_make_sq_img(bad_roi).show()
+# _make_sq_img(bad_roi).show()
+#%%
+# #no different in contour length for engatives vs non-negatives
+# print(list(map(lambda j: [i.shape[0] for i in j], neg_contours))) #n points per contour per image contours
+# print("\n\n", list(map(lambda j: [i.shape[0] for i in j], nonneg_contours))) 
+
+v_sum = np.sum(roi, axis=0)
+fig,(ax1,ax2) = plt.subplots(2, sharex=True, constrained_layout=True)
+ax1.plot(v_sum)
+ax2.imshow(Image.fromarray(roi), aspect="auto")
+fig.show()
 
 
+# cv2.calcHist(_im, [0], None, [256], [0,256])
+
+# print(ax1.get_xticks(), ax2.get_xticks())
 
 #%% improve proc for digits of bad cell img 
 crop_im = new_im.crop(header2clipped(header_bn_box[]))
