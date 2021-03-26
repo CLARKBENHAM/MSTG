@@ -17,7 +17,7 @@ import sys
 github_dir = "c:\\Users\\student.DESKTOP-UT02KBN\\MSTG"
 #%%
 if __name__ == "__main__":
-    return 1
+    raise requests.exceptions.RequestException
     base_url = "https://finance.yahoo.com/quote/GME/options"
     try:
         r = requests.get(base_url)
@@ -107,7 +107,7 @@ if __name__ == "__main__":
     
     df.to_pickle(f"market_data\\current_option_prices {datetime.today().strftime('%b,%d %Y')}")
     # df =  pd.read_pickle(f"{github_dir}\\Market_Gamma_(GME)\\current_option_prices")
-    sys.exit()
+    sys.exit(0)
 
 #%%:
 import numpy as np
