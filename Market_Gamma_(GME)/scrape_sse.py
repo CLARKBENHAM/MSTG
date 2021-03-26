@@ -40,22 +40,40 @@ import matplotlib.pyplot as plt
 #calamari-predict --checkpoint C:\Users\student.DESKTOP-UT02KBN\Downloads\uw3-modern-english\uw3-modern-english\0.ckpt --files "MSTG\Market_Gamma_(GME)\del.png"
 #see https://github.com/Calamari-OCR/calamari/blob/master/calamari_ocr/test/test_prediction.py
 #for code
-
-sys.exit()
+# sys.exit()
+def _is_at_bottom(rows_open = False):
+    """check if have scrolled to bottom of screen, 
+    rows_open: With bottom rows expanded, but returns false if bottom row selected
+                because it would be partially orange
+    """
+    #isue is width of scroll icon changes with num rows unfolded
+    # slider_loc = list(pygu.locateAllOnScreen("slider_bottom.png"))[0]
+    # slider_loc = (1890, 925, 19,87)
+    #pygu.screenshot(f"bottom_footer.png")
+    # ar = np.array(Image.open(f"bottom_footer.png"))
+    # Image.fromarray(ar[-20:-3,5:-5]).save("bottom_footer_expanded_rows.png")
+    # #use -20:-5 if want to include the bottom of last row, expanded 
+    # # and NOT selected w/ orange highlight
+    if rows_open:
+        return len(list(pygu.locateAllOnScreen("bottom_footer_expanded_rows.png",
+                                               confidence = 0.999,    
+                                                # region=(1900, 0, 1080, 20)
+                                               ))) > 0
+    else:
+        return len(list(pygu.locateAllOnScreen("bottom_footer.png",
+                                               confidence = 0.999,    
+                                                # region=(1900, 0, 1080, 20)
+                                               ))) > 0        
+#% take all screenshots
 if __name__ == "__main__":
-    #need to start w/ SSE 2nd from bottom row selected
+    #need to start w/ SSE 2nd row from bottom selected
+    #full screen so can't even see icon bar at bottom
     pygu.moveTo(x=1897,y=998, duration=0.359)
     pygu.doubleClick()
     cnt = 0
-    while True:
-        # slider_loc = list(pygu.locateAllOnScreen("slider_bottom.png"))[0]
-        slider_loc = (1890, 925, 19,87)
-        if len(list(pygu.locateAllOnScreen("slider_bottom.png",
-                                           region=slider_loc))) > 0:
-            print("seen all options")
-            break
-        #or check bottom
+    while not _is_at_bottom():
         pygu.screenshot(f"data_pics\img{cnt}.png")
+        #don't think SSE checks for automated behavior; but just in case
         cnt += 1
         if cnt < 2:
             time.sleep(2 + 3*random.random())
@@ -65,7 +83,55 @@ if __name__ == "__main__":
         # for _ in range(20):
         #     pygu.click()
         print(cnt, os.listdir("data_pics"))
-        
+#%%
+def expand_strikes():
+    """expands all hiden options; as bunched by expiry under single line
+    runtime: ~2'. Faster to do by hand
+    """
+    pygu.moveTo(x=1897,y=998)
+    pygu.click()
+    while not _is_at_bottom(rows_open=True):
+        call_dropdown = list(pygu.locateAllOnScreen("calls_expiry_right_arrow.png",
+                                                    confidence=0.990))
+        put_dropdown = list(pygu.locateAllOnScreen("puts_expiry_right_arrow.png",
+                                                   confidence=0.990))
+        dropdowns = call_dropdown + put_dropdown
+        if len(dropdowns) > 0:
+            dropdown = min(dropdowns,
+                           key = lambda i: i.top)
+            print(dropdown, len(dropdowns))
+            pygu.click(dropdown.left + 5,
+                       dropdown.top + 5, 
+                       duration=0.2 + random.random()/5#sometimes gets stuck/doubleclicks?
+                       )
+            #sse is slow, check actually expanded
+            time.sleep(1) 
+            clicked_region = (dropdown.left, dropdown.top, 75, 25)
+            while True:
+                expanded = list(pygu.locateAllOnScreen("calls_expiry_right_arrow.png",
+                                                       confidence=0.990,
+                                                       region = clicked_region))
+                expanded += list(pygu.locateAllOnScreen("puts_expiry_right_arrow.png",
+                                                       confidence=0.990,
+                                                       region = clicked_region))
+                if len(expanded) == 0:
+                    break
+                else:
+                    time.sleep(1)
+        pygu.keyDown("pgdn"); time.sleep(0.1 + random.random()/10); pygu.keyUp("pgdn");
+
+  #%%
+# print(len()),
+#       len())
+call_dropdown = list(pygu.locateAllOnScreen("calls_expiry_right_arrow.png",
+                                                confidence=0.990))
+put_dropdown = list(pygu.locateAllOnScreen("puts_expiry_right_arrow.png",
+                                           confidence=0.990))
+dropdowns = call_dropdown + put_dropdown
+dropdown = min(dropdowns,
+                       key = lambda i: i.top)
+pygu.moveTo(x = dropdown.left + 5, y = dropdown.top + 5)
+
 #%%
 #left top right bottom
 cropper = lambda im: im.crop((10, 422, 1910,1010)) #for values

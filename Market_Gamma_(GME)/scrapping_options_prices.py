@@ -17,14 +17,9 @@ import sys
 github_dir = "c:\\Users\\student.DESKTOP-UT02KBN\\MSTG"
 #%%
 if __name__ == "__main__":
-    print(pd.read_pickle(f"market_data\\current_option_prices {datetime.today().strftime('%b,%d %Y')}"))
-    sys.exit()
-    # raise requests.exceptions.RequestException
     base_url = "https://finance.yahoo.com/quote/GME/options"
-    try:
-        r = requests.get(base_url)
-    except requests.exceptions.RequestException as e:
-        print(f"request failed due to {e}.\n Will retry in an hour")
+    #throws requests.exceptions.RequestException on no internet
+    r = requests.get(base_url)
     root = lxml.html.fromstring(r.content)
     root.make_links_absolute(base_url)
     url_l = root.xpath('//*[@id="Col1-1-OptionContracts-Proxy"]/section/div/div[1]/select')

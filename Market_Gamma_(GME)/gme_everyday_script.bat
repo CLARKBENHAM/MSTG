@@ -9,7 +9,7 @@
     :@Catch ::runs regardless
         if %errorlevel%==1 (
          echo "Will Retry"
-         timeout /T  3
+         timeout /T  3600
          goto run_script
          )
     :@EndCatch
