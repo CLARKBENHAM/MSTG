@@ -1,4 +1,4 @@
-#import directly from Street smart edge
+#import data from Street smart edge by processing screenshots
 import numpy as np
 import pandas as pd
 # import beautifulsoup4

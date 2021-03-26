@@ -17,8 +17,12 @@ import sys
 github_dir = "c:\\Users\\student.DESKTOP-UT02KBN\\MSTG"
 #%%
 if __name__ == "__main__":
+    return 1
     base_url = "https://finance.yahoo.com/quote/GME/options"
-    r = requests.get(base_url)
+    try:
+        r = requests.get(base_url)
+    except requests.exceptions.RequestException as e:
+        print(f"request failed due to {e}.\n Will retry in an hour")
     root = lxml.html.fromstring(r.content)
     root.make_links_absolute(base_url)
     url_l = root.xpath('//*[@id="Col1-1-OptionContracts-Proxy"]/section/div/div[1]/select')
