@@ -25,14 +25,13 @@ import pydirectinput
 
 from PIL import Image, ImageChops, ImageDraw
 
-# from pytesseract import pytesseract #this didn't work even with single char segmentation
-# pytesseract.tesseract_cmd = "c:\\Program Files\\Tesseract-OCR\\tesseract.exe"
+from pytesseract import pytesseract #this didn't work even with single char segmentation
+pytesseract.tesseract_cmd = "c:\\Program Files\\Tesseract-OCR\\tesseract.exe"
 
 from skimage.filters import threshold_local
 import cv2
 
 import matplotlib.pyplot as plt
-
 
 # to import calamari-OCR
 #download https://github.com/Calamari-OCR/calamari_models/tree/master/uw3-modern-english
@@ -41,7 +40,7 @@ import matplotlib.pyplot as plt
 #see https://github.com/Calamari-OCR/calamari/blob/master/calamari_ocr/test/test_prediction.py
 #for code
 # sys.exit()
-def _is_at_bottom(rows_open = False):
+def is_at_bottom(rows_open = False):
     """check if have scrolled to bottom of screen, 
     rows_open: With bottom rows expanded, but returns false if bottom row selected
                 because it would be partially orange
@@ -64,14 +63,14 @@ def _is_at_bottom(rows_open = False):
                                                confidence = 0.999,    
                                                 # region=(1900, 0, 1080, 20)
                                                ))) > 0        
-#% take all screenshots
+#%% take all screenshots
 if __name__ == "__main__":
     #need to start w/ SSE 2nd row from bottom selected
     #full screen so can't even see icon bar at bottom
     pygu.moveTo(x=1897,y=998, duration=0.359)
     pygu.doubleClick()
     cnt = 0
-    while not _is_at_bottom():
+    while not is_at_bottom():
         pygu.screenshot(f"data_pics\img{cnt}.png")
         #don't think SSE checks for automated behavior; but just in case
         cnt += 1
@@ -90,7 +89,7 @@ def expand_strikes():
     """
     pygu.moveTo(x=1897,y=998)
     pygu.click()
-    while not _is_at_bottom(rows_open=True):
+    while not is_at_bottom(rows_open=True):
         call_dropdown = list(pygu.locateAllOnScreen("calls_expiry_right_arrow.png",
                                                     confidence=0.990))
         put_dropdown = list(pygu.locateAllOnScreen("puts_expiry_right_arrow.png",
@@ -120,24 +119,11 @@ def expand_strikes():
                     time.sleep(1)
         pygu.keyDown("pgdn"); time.sleep(0.1 + random.random()/10); pygu.keyUp("pgdn");
 
-  #%%
-# print(len()),
-#       len())
-call_dropdown = list(pygu.locateAllOnScreen("calls_expiry_right_arrow.png",
-                                                confidence=0.990))
-put_dropdown = list(pygu.locateAllOnScreen("puts_expiry_right_arrow.png",
-                                           confidence=0.990))
-dropdowns = call_dropdown + put_dropdown
-dropdown = min(dropdowns,
-                       key = lambda i: i.top)
-pygu.moveTo(x = dropdown.left + 5, y = dropdown.top + 5)
-
-#%%
 #left top right bottom
 cropper = lambda im: im.crop((10, 422, 1910,1010)) #for values
 id_crop = lambda im: im.crop((158, 489, 360, 980)) #for just contract details
 
-def remove_duplicates():
+def _remove_duplicates():
     """filter by eg. GME 03/19/2023 950 C
      NOTE: THis would remove values for the same contract collected at different times
     """
@@ -161,7 +147,7 @@ def remove_duplicates():
                 break
             n_fails += 1
         cnt -= 1
-#%%
+
 #17 indexes
 def get_boundry(header, check=False):
     """get box that seperate header columns of a header only image
