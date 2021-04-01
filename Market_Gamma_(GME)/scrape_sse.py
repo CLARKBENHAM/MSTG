@@ -1,4 +1,5 @@
 #import data from Street smart edge by processing screenshots
+#upload to website
 import numpy as np
 import pandas as pd
 # import beautifulsoup4
@@ -40,6 +41,10 @@ import matplotlib.pyplot as plt
 #see https://github.com/Calamari-OCR/calamari/blob/master/calamari_ocr/test/test_prediction.py
 #for code
 # sys.exit()
+
+LR_OFFSET = 15#amount to cut from sides of screen
+FSW, FSH = pygu.screenshot().size#full screen width
+
 def is_at_bottom(rows_open = False):
     """check if have scrolled to bottom of screen, 
     rows_open: With bottom rows expanded, but returns false if bottom row selected
@@ -63,15 +68,67 @@ def is_at_bottom(rows_open = False):
                                                confidence = 0.999,    
                                                 # region=(1900, 0, 1080, 20)
                                                ))) > 0        
-#%% take all screenshots
-if __name__ == "__main__":
-    #need to start w/ SSE 2nd row from bottom selected
-    #full screen so can't even see icon bar at bottom
+
+def get_header_bnd_bx(im = "data_pics\img0.png", ret_header_top = False):
+    """Finds where header bar[eg. "Strikes", ... "Gamma"] is
+        im: either path or PIL.IMage
+        ret_header_top: returns y-ix of top of header
+    """
+    if not isinstance(im, str) or os.path.exists(im):
+        _, head_bot, *_ = pygu.locate("header_top_border.png",
+                                      im) 
+    else:
+        _, head_bot, *_ = pygu.locate("header_top_border.png",
+                                      pygu.screenshot()) 
+    #top of scrollbar up arrow touches bottom of column header
+    head_bot -= 9 #bottom of header
+    header_crop_only = (0, head_bot-30, FSW, head_bot)
+    if ret_header_top:
+        return head_bot - 30
+    else:
+        return header_crop_only
+
+def crop_fullscreen(im, header_top = get_header_bnd_bx(ret_header_top = True)):
+    """removes non-option headers and sidebars from a full-screened image
+    will depend on layout settings
+    """   
+    #check if taskbar at bottom
+    has_taskbar = pygu.locate("windows_icon.png",
+                              im,
+                              confidence = 0.99,    
+                              region=(0, FSH-75, 75, FSH)
+                                )
+    if has_taskbar is not None:
+        _, t, *_ = has_taskbar
+        data_bottom = t - 8
+        return im.crop((lr_offset, head_top, FSW-lr_offset, data_bottom))
+    else:
+        return im.crop((lr_offset, head_top, FSW-lr_offset, FSH))
+    
+def take_all_screenshots(is_croppped = False):
+    """iterates through SSE once and screenshots non-headers
+            saving to .\data_pics
+        is_cropped will return only option data if True
+        else crops a little on sides so vertical lines not present
+    NOTE:
+        need to start w/ SSE 2nd row from bottom selected
+        full screen so can't even see icon bar at bottom
+            move taskbar to 2ndary display w/ https://www.tenforums.com/general-support/69164-taskbar-do-not-display-main-display.html (only on 1 monitor; drag to 2ndary)
+    
+    """
     pygu.moveTo(x=1897,y=998, duration=0.359)
     pygu.doubleClick()
-    cnt = 0
+    cnt = max([int(i[3:-4]) for i in os.listdir("data_pics")], 
+              default = -1) + 1
+    if cnt > 0:
+        print(f"Screen shots start at {cnt}")
     while not is_at_bottom():
-        pygu.screenshot(f"data_pics\img{cnt}.png")
+        im = pygu.screenshot()
+        if is_cropped:
+            crop_fullscreen(im).save(f"data_pics\img{cnt}.png")
+        else:
+            im.crop((lr_offset, 0, FSW-lr_offset, FSH)).save(f"data_pics\img{cnt}.png")
+        
         #don't think SSE checks for automated behavior; but just in case
         cnt += 1
         if cnt < 2:
@@ -79,10 +136,9 @@ if __name__ == "__main__":
         else:
             time.sleep(5 + 30*random.random())
         pygu.keyDown("pgdn"); time.sleep(0.1 + random.random()/10); pygu.keyUp("pgdn");
-        # for _ in range(20):
-        #     pygu.click()
-        print(cnt, os.listdir("data_pics"))
-#%%
+
+    print(f"Screen shots end at {cnt}")
+
 def expand_strikes():
     """expands all hiden options; as bunched by expiry under single line
     runtime: ~2'. Faster to do by hand
@@ -149,9 +205,9 @@ def _remove_duplicates():
         cnt -= 1
 
 #17 indexes
-def get_boundry(header, check=False):
+def get_boundry(header, plot_check=False):
     """get box that seperate header columns of a header only image
-    check: visually plots to confirm where ix marked
+    plot_check: visually plots to confirm where ix marked
     """
     header_arr = np.array(header.crop((0,10, 1595,24)))
 
@@ -165,7 +221,7 @@ def get_boundry(header, check=False):
             boundry_ix += [c_ix]
     #doesn't work, but would be ideal list(pygu.locateAll("table_header_sep.png","table_header.png" ))
 
-    if check:
+    if plot_check:
         im = Image.open("table_header.png").convert('L')
         draw = ImageDraw.Draw(im)
         w,h = im.size
@@ -191,34 +247,30 @@ def get_boundry(header, check=False):
         col_names += [s]
     #strikes box includes a space for the 'right arrow' next to the contract row
     header_bnd_box[0] = (15, 0, header_bnd_box[0][2], header_bnd_box[0][3])
+
+    #got a repeat for last value? Not sure why
+    if col_names[-1] == 'IV':
+        del col_names[-1] 
+        del header_bnd_box[-1]
+    #these values aren't in every row, can't tell which row apply too
+    bad_ix = col_names.index("Last Trade")
+    bad_ix2 = col_names.index("Change")
+    del col_names[bad_ix], header_bnd_box[bad_ix],
+    del  col_names[bad_ix2-1], header_bnd_box[bad_ix2-1]
     return col_names, header_bnd_box
 
-# # Finds where header bar[eg. "Strikes", ... "Gamma"] is on an image
-#    returns boundries for seperating columns on the header
-_, head_bot, *_ = pygu.locate("header_top_border.png","data_pics\img0.png" ) 
-#top of scrollbar up arrow touches bottom of column header
-head_bot -= 9 #bottom of header
-sw, sh = Image.open("data_pics\img0.png").size
-boundry_sz = 15
-header_crop_only = (boundry_sz, head_bot-30, sw-boundry_sz, head_bot)
+#returns boundries for seperating columns on the header
+header_crop_only = get_header_bnd_bx()
 header = Image.open("data_pics\img0.png").convert('L'
                                                   ).crop(header_crop_only)
 col_names, header_bnd_box = get_boundry(header)
 
-#got a repeat for last value? Not sure why
-if col_names[-1] == 'IV':
-    del col_names[-1] 
-    del header_bnd_box[-1]
-#these values aren't in every row, can't tell which row apply too
-bad_ix = col_names.index("Last Trade")
-bad_ix2 = col_names.index("Change")
-del col_names[bad_ix], header_bnd_box[bad_ix],
-del  col_names[bad_ix2-1], header_bnd_box[bad_ix2-1]
-
 name2ix = {n:ix for ix,n in enumerate(col_names)}
 
 # from header clipping to screen shot
-header2screen = lambda b: (b[0]+boundry_sz, head_bot, b[2]+boundry_sz, sh)
+#%%update w/ new API
+
+header2screen = lambda b: (b[0]+LR_OFFSET, head_bot, b[2]+LR_OFFSET, sh)
 screen_bnd = [header2screen(bx) for bx in header_bnd_box]
 
 #%%
@@ -241,6 +293,15 @@ def _crop2col(im, bnd, shrink_h = 0):
            im.size[1]-shrink_h)
     return im.crop(bnd)
 
+# def header2clipped(bx, new_h):
+#      """
+#      x-ix seperation for columns is extened to cut the entire image into columns
+#      from header name only to seperating data columns
+#      bx: boundry_box whose l-r cordinates will be used
+#      new_h: height of image 
+#      """
+#     return (LR_OFFSET+ bx[0], 0, LR_OFFSET+ bx[2], new_h)
+
 def _crop2cell(im, col_bnd, row_bnd):
     """
     Takes a column bound, a row bound and returns the intersection
@@ -257,6 +318,7 @@ def _crop2cell(im, col_bnd, row_bnd):
 def _cut_subheaders(img_path):
     """only get data rows; cutout any subheaders in the middle of text 
      eg. "Puts Mar 19, 2021 (Fri: 03 days)" get removed
+         the grey bars in middle/at top
      """
     im = Image.open(img_path)
     sw, sh = im.size
@@ -281,7 +343,7 @@ def _make_row_boundries(new_im):
     returns list of row boundries for any image with the same height
         (i.e. #of subheaders cut out)
     """
-    crop_im = new_im.crop(header2clipped(header_bnd_box[1]))
+    crop_im = _crop2col(new_im, header_bnd_box[1])
     cv_im = np.array(crop_im)
     result = cv_im.copy()
     
@@ -306,7 +368,6 @@ def _make_row_boundries(new_im):
                              new_im.size[0], #max(c[:,0]), 
                              new_im.size[1] - min(c[:,1]) + 3)
     return [contour2box(c) for c in contours] 
-
 
 img_path = "data_pics\img0.png"
 new_im = _cut_subheaders(img_path)
@@ -374,8 +435,6 @@ def img2values(img_path, col_names=col_names, header_bnd_box=header_bnd_box):
         y_offset += d.size[1]
     
     vals = []
-    #from header name only to seperating data columns
-    header2clipped = lambda bx:  (boundry_sz + bx[0], 0, boundry_sz + bx[2], new_h)
     for bx,n in zip(header_bnd_box, col_names):
         crop_im = new_im.crop(header2clipped(bx))
         outtype = int if  n in ("Volume", "Open Int")  \
@@ -393,7 +452,7 @@ def img2values(img_path, col_names=col_names, header_bnd_box=header_bnd_box):
         if n == 'Symbol':
             my_config = '--psm 6'
         else:
-            my_config = '--psm 6 digits tessedit_char_whitelist=0123456789\\.\\,'
+            my_config = '--psm 6 digits tessedit_char_whitelist=-0123456789\\.\\,'
         
         ocr1 = pytesseract.image_to_string(cv_im, config= my_config)
         
@@ -451,6 +510,7 @@ def img2values(img_path, col_names=col_names, header_bnd_box=header_bnd_box):
 img_path = 'del.png'
 vals = img2values(img_path)
 df = pd.DataFrame(list(zip(*vals)))
+df.columns = col_names
 df.head()
 #%% extra info by cell; 
 def proc_split_on_row_lines(new_im):
@@ -969,7 +1029,10 @@ pytesseract.image_to_string(result)
 # blur = cv2.GaussianBlur(crop_im)
 # edge = cv2.Canny(blur, 75, 200)
 
-
+#%% run main
+if __name__ == "__main__":
+    pass
+    # take_all_screenshots()
 
 #%%  #helpful asides
 
