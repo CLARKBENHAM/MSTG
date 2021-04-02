@@ -81,13 +81,16 @@ def get_header_bnd_bx(im = "data_pics\img0.png", ret_header_top = False):
     if not isinstance(im, str) or os.path.exists(im):
         _, head_bot, *_ = pygu.locate("header_top_border.png",
                                       im) 
+        sw = im.size[0]
     else:
         print("Invalid Path: using screenshot")
         _, head_bot, *_ = pygu.locate("header_top_border.png",
                                       pygu.screenshot()) 
+        sw = FSW
     #top of scrollbar up arrow touches bottom of column header
     head_bot -= 9 #bottom of header
-    header_crop_only = (0, head_bot-30, FSW, head_bot)
+    
+    header_crop_only = (0, head_bot-30, sw, head_bot)
     if ret_header_top:
         return head_bot - 30
     else:
@@ -99,22 +102,23 @@ def get_taskbar_top(im):
         if there is no taskbar (im already cropped)
         im: path or PIL.Image
     """
-    print("had to re-eval")
+    if isinstance(im, str):
+        sw, sh = Image.open(im).size
+    else:
+        sw, sh = im.size
+    #imprecise? Possiblly; grib
     has_taskbar = pygu.locate("windows_icon.png",
                               im,
-                              confidence = 0.99,    
-                              region=(0, FSH-75, 75, FSH)
+                              confidence = 0.5,    
+                              region=(0, sh-75, 75, sh)
                                 )
     if has_taskbar is not None:
-        _, t, *_ = hash_taskbar
+        _, t, *_ = has_taskbar
         return t - 8
     else:
-        if isinstance(im, str):
-            sw, sh = Image.open(im).size
-        else:
-            sw, sh = im.size
         return sh
-    
+# print(get_taskbar_top(im)   ,get_taskbar_top(im2))   
+
 def crop_fullscreen(im, reuse_im_path = ""):
     """removes non-option headers and sidebars from a full-screened image
     will adjust for layout settings
@@ -197,16 +201,15 @@ def take_all_screenshots(is_cropped = False):
             pass
             # time.sleep(2 + 3*random.random())
         else:
-            break
+            pass
+            # break
             # time.sleep(5 + 30*random.random())
         pygu.keyDown("pgdn"); time.sleep(0.1 + random.random()/10); pygu.keyUp("pgdn");
     
     os.remove(f"data_pics\\template_del.png")
     print(f"Screen shots end at {cnt-1}")
     
-take_all_screenshots(is_cropped = True)
-#%%
-def expand_strikes():
+def _expand_strikes():
     """expands all hiden options; as bunched by expiry under single line
     runtime: ~2'. Faster to do by hand
     """
@@ -268,12 +271,12 @@ def _remove_duplicates():
                 break
             n_fails += 1
         cnt -= 1
-
+#%%
 #17 indexes
-def get_boundry(header, plot_check=False, remove_variable_existance = True):
+def get_boundry(header, plot_check=False, remove_variable_existance_cols = True):
     """get box that seperate header columns of a header only image
     plot_check: visually plots to confirm where ix marked
-    remove_variable_existance: remove columns("Last Trade", "Change")
+    remove_variable_existance_cols: remove columns("Last Trade", "Change")
         whose values aren't in every row. Only set to false if are going to
         process on row by row basis and can deal w/ non-existance
     """
@@ -290,7 +293,7 @@ def get_boundry(header, plot_check=False, remove_variable_existance = True):
     #doesn't work, but would be ideal list(pygu.locateAll("table_header_sep.png","table_header.png" ))
 
     if plot_check:
-        im = Image.open("table_header.png").convert('L')
+        im = header.convert('L')
         draw = ImageDraw.Draw(im)
         w,h = im.size
         for ix in boundry_ix: 
@@ -320,24 +323,14 @@ def get_boundry(header, plot_check=False, remove_variable_existance = True):
     if col_names[-1] == 'IV':
         del col_names[-1] 
         del header_bnd_box[-1]
-    if remove_variable_existance:    
-   f #these values aren't in every row, can't tell which row apply too
+    if remove_variable_existance_cols:    
+    #these values aren't in every row, can't tell which row apply too
         bad_ix = col_names.index("Last Trade")
         bad_ix2 = col_names.index("Change")
         del col_names[bad_ix], header_bnd_box[bad_ix],
         del  col_names[bad_ix2-1], header_bnd_box[bad_ix2-1]
     return col_names, header_bnd_box
 
-#returns boundries for seperating columns on the header
-header_crop_only = get_header_bnd_bx(im=im.crop((12, 0, FSW-12, FSH)))
-header = Image.open("data_pics\img0.png").crop((12, 0, FSW-12, FSH)).convert('L'
-                                                  ).crop(header_crop_only)
-col_names, header_bnd_box = get_boundry(header, plot_check=True)
-
-# from header clipping to screen shot
-# header2screen = lambda b: (b[0]+LR_OFFSET, head_bot, b[2]+LR_OFFSET, sh)
-# screen_bnd = [header2screen(bx) for bx in header_bnd_box]
-#%%
 def _crop2row(im, bnd, shrink_w = 0):
     """returns a single row based on bounds; preserving im width* 
     shrink_w: extra amount taken off left & Right beyond limits
@@ -357,15 +350,6 @@ def _crop2col(im, bnd, shrink_h = 0):
            im.size[1]-shrink_h)
     return im.crop(bnd)
 
-# def header2clipped(bx, new_h):
-#      """
-#      x-ix seperation for columns is extened to cut the entire image into columns
-#      from header name only to seperating data columns
-#      bx: boundry_box whose l-r cordinates will be used
-#      new_h: height of image 
-#      """
-#     return (LR_OFFSET+ bx[0], 0, LR_OFFSET+ bx[2], new_h)
-
 def _crop2cell(im, col_bnd, row_bnd):
     """
     Takes a column bound, a row bound and returns the intersection
@@ -383,12 +367,12 @@ def _cut_subheaders(im):
     """only get data rows; cutout any subheaders in the middle of text 
      eg. "Puts Mar 19, 2021 (Fri: 03 days)" get removed
          the grey bars in middle/at top
+    also cuts taskbar at bottom, if exists
      """
     sw, sh = im.size
     data_pieces = list(pygu.locateAll("header_down_arrow.png", im))
     #need to cut desktop icon bar at bottom; else will be counted as a row
-    if has_taskbar
-    split_tops = [t for _,t,*_ in data_pieces] + [sh-63]
+    split_tops = [t for _,t,*_ in data_pieces] + [get_taskbar_top(im)]
     data_im = []
     for t1,t2 in zip(split_tops[:-1], split_tops[1:]): 
         data_im += [im.crop((0, t1+25, sw, t2-5))]
@@ -401,13 +385,14 @@ def _cut_subheaders(im):
         y_offset += d.size[1]
     return new_im
 
-def _make_row_boundries(new_im):
+def _make_row_boundries(new_im, header_bnd_box):
     """
     crop_im: pil image column data 
+    header_bnd_box: output of get_header_bnd_box()
     returns list of row boundries for any image with the same height
         (i.e. #of subheaders cut out)
     """
-    crop_im = _crop2col(new_im, header_bnd_box[1])
+    crop_im = _crop2col(new_im, header_bnd_box[-1])
     cv_im = np.array(crop_im)
     result = cv_im.copy()
     
@@ -419,27 +404,56 @@ def _make_row_boundries(new_im):
     kernel_ones = np.ones((3, 5), dtype=np.uint8)
     blocks = cv2.dilate(erode, kernel_ones)
     
+    h_sum = np.sum(blocks, axis=1)
+    empty_row_ix = np.where(h_sum != 0)[0]
+    row_breakpoints = [0]
+    segment = []
+    for i,j in zip(empty_row_ix[:-1], empty_row_ix[1:]):
+        segment += [i]
+        if i+1 < j and len(segment) > 5:
+            row_breakpoints += [int(np.median(segment))]
+            segment = []
+    
+    if len(segment) > 4:
+            row_breakpoints += [int(np.median(segment))]
+    #little blank space at top
+    if row_breakpoints[1] < 8:
+       del row_breakpoints[0]         
+
+    # pdb.set_trace()
+    #if no white space at bottom then got a portion of a row, want to exclude anyway
+    return [(0,t-1, new_im.size[0], b+1) for t,b in zip(row_breakpoints[:-1],
+                                                     row_breakpoints[1:])]
+    
     #looking for white holes in black background, so colors inverted
     contours, hierarchy  = cv2.findContours(~blocks, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-    # Image.fromarray(cv2.drawContours(cv_im, contours, -1, (0,255,0), 3)).show()
-    
+    # Image.fromarray(cv2.drawContours(cv_im, contours, -1, (0,255,0), 3)).show()    
+
     #WARNING: cv2 y=0 is bottom, Image y=0 is top.
     contours = [c.reshape(-1,2) for c in contours]
-
-    #left top right bottom
     contour2box = lambda c: (0, #min(c[:,0]),
                              new_im.size[1] - max(c[:,1]) -3,
                              new_im.size[0], #max(c[:,0]), 
                              new_im.size[1] - min(c[:,1]) + 3)
-    return [contour2box(c) for c in contours] 
+                             
+    return [contour2box(c) for c in contours]
 
+#returns boundries for seperating columns on the header
+# im = Image.open("data_pics\img0.png").crop((12, 0, FSW-12, FSH))
+im = im2
+header_crop_only = get_header_bnd_bx(im=im)
+header = im.convert('L').crop(header_crop_only)
+col_names, header_bnd_box = get_boundry(header, plot_check=False)
 
-im = Image.open("data_pics\img0.png").crop((12, 0, FSW-12, FSH))
 new_im = _cut_subheaders(im)
-full_row_bnds = _make_row_boundries(new_im)
+
+full_row_bnds = _make_row_boundries(new_im, header_bnd_box)
 
 # #Works but not useful
 full_row = new_im.crop(full_row_bnds[-1])
+full_row.show()
+new_im.crop(full_row_bnds[11]).show()
+new_im.crop(full_row_bnds[0]).show()
 # full_row.save("data_table.png")
 # full_row.show()
 # _crop2col(new_im, header_bnd_box[1], shrink_h = 29).show()
