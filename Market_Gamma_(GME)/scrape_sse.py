@@ -42,8 +42,98 @@ import matplotlib.pyplot as plt
 #for code
 # sys.exit()
 
-LR_OFFSET = 15#amount to cut from sides of screen
+from functools import lru_cache#doesn't work for nonhashable fns
+import collections
+
+#crop box order: (left top right bottom)
+LR_OFFSET = 12#amount to cut from sides of screen
 FSW, FSH = pygu.screenshot().size#full screen width
+
+def memoize(func):
+    """incase potentially have unhashable inputs and need to filter out
+    """
+    mx_size = 32
+    cache = dict()
+    lru_l = []
+    def memoized_func(*args, **kwargs):
+        vrs_tup = tuple(list(args) + list(kwargs.keys()) + list(kwargs.values()))
+        if not all(isinstance(i, collections.Hashable) for i in vrs_tup):
+            return func(*args, **kwargs)
+        
+        if vrs_tup in cache:
+            return cache[vrs_tup]
+        result = func(*args, **kwargs)
+        cache[vrs_tup] = result
+        nonlocal lru_l, mx_size
+        lru_l += [vrs_tup]
+        if len(lru_l) > mx_size:
+            first = lru_l.pop(0)
+            del cache[first]
+        return result
+    return memoized_func    
+
+@memoize
+def get_header_bnd_bx(im = "data_pics\img0.png", ret_header_top = False):
+    """Finds where header bar[eg. "Strikes", ... "Gamma"] is
+        im: either path or PIL.IMage
+        ret_header_top: returns y-ix of top of header
+    """
+    if not isinstance(im, str) or os.path.exists(im):
+        _, head_bot, *_ = pygu.locate("header_top_border.png",
+                                      im) 
+    else:
+        print("Invalid Path: using screenshot")
+        _, head_bot, *_ = pygu.locate("header_top_border.png",
+                                      pygu.screenshot()) 
+    #top of scrollbar up arrow touches bottom of column header
+    head_bot -= 9 #bottom of header
+    header_crop_only = (0, head_bot-30, FSW, head_bot)
+    if ret_header_top:
+        return head_bot - 30
+    else:
+        return header_crop_only
+
+@memoize
+def get_taskbar_top(im):
+    """Returns the top of the taskbar or bottom of image
+        if there is no taskbar (im already cropped)
+        im: path or PIL.Image
+    """
+    print("had to re-eval")
+    has_taskbar = pygu.locate("windows_icon.png",
+                              im,
+                              confidence = 0.99,    
+                              region=(0, FSH-75, 75, FSH)
+                                )
+    if has_taskbar is not None:
+        _, t, *_ = hash_taskbar
+        return t - 8
+    else:
+        if isinstance(im, str):
+            sw, sh = Image.open(im).size
+        else:
+            sw, sh = im.size
+        return sh
+    
+def crop_fullscreen(im, reuse_im_path = ""):
+    """removes non-option headers and sidebars from a full-screened image
+    will adjust for layout settings
+    reuse_im_path: assume im has the same layout as image at reuse_im_path image
+            will reuse cached values from get_header_bnd_bx & get_taskbar_top
+    """   
+    #check if taskbar at bottom
+    if os.path.exists(reuse_im_path):
+        header_top = get_header_bnd_bx(im=reuse_im_path, ret_header_top = True)
+        data_bottom = get_taskbar_top(im=reuse_im_path)
+    else:
+        header_top = get_header_bnd_bx(im=im, ret_header_top = True)
+        data_bottom = get_taskbar_top(im)
+        
+    if len(reuse_im_path)>0 and not os.path.exists(reuse_im_path):
+        #alright to run on first time
+        print(f"Warning Invalid Path {reuse_im_path}: reprocessed Image")
+
+    return im.crop((LR_OFFSET, header_top, FSW-LR_OFFSET, data_bottom))
 
 def is_at_bottom(rows_open = False):
     """check if have scrolled to bottom of screen, 
@@ -67,78 +157,55 @@ def is_at_bottom(rows_open = False):
         return len(list(pygu.locateAllOnScreen("bottom_footer.png",
                                                confidence = 0.999,    
                                                 # region=(1900, 0, 1080, 20)
-                                               ))) > 0        
+                                               ))) > 0   
 
-def get_header_bnd_bx(im = "data_pics\img0.png", ret_header_top = False):
-    """Finds where header bar[eg. "Strikes", ... "Gamma"] is
-        im: either path or PIL.IMage
-        ret_header_top: returns y-ix of top of header
-    """
-    if not isinstance(im, str) or os.path.exists(im):
-        _, head_bot, *_ = pygu.locate("header_top_border.png",
-                                      im) 
-    else:
-        _, head_bot, *_ = pygu.locate("header_top_border.png",
-                                      pygu.screenshot()) 
-    #top of scrollbar up arrow touches bottom of column header
-    head_bot -= 9 #bottom of header
-    header_crop_only = (0, head_bot-30, FSW, head_bot)
-    if ret_header_top:
-        return head_bot - 30
-    else:
-        return header_crop_only
-
-def crop_fullscreen(im, header_top = get_header_bnd_bx(ret_header_top = True)):
-    """removes non-option headers and sidebars from a full-screened image
-    will depend on layout settings
-    """   
-    #check if taskbar at bottom
-    has_taskbar = pygu.locate("windows_icon.png",
-                              im,
-                              confidence = 0.99,    
-                              region=(0, FSH-75, 75, FSH)
-                                )
-    if has_taskbar is not None:
-        _, t, *_ = has_taskbar
-        data_bottom = t - 8
-        return im.crop((lr_offset, head_top, FSW-lr_offset, data_bottom))
-    else:
-        return im.crop((lr_offset, head_top, FSW-lr_offset, FSH))
-    
-def take_all_screenshots(is_croppped = False):
+def take_all_screenshots(is_cropped = False):
     """iterates through SSE once and screenshots non-headers
             saving to .\data_pics
         is_cropped will return only option data if True
         else crops a little on sides so vertical lines not present
     NOTE:
-        need to start w/ SSE 2nd row from bottom selected
+        need to start w/ SSE row at bottom selected
+                (select top row and hit down bottom once)
         full screen so can't even see icon bar at bottom
-            move taskbar to 2ndary display w/ https://www.tenforums.com/general-support/69164-taskbar-do-not-display-main-display.html (only on 1 monitor; drag to 2ndary)
-    
+                move taskbar to 2ndary display w/ https://www.tenforums.com/general-support/69164-taskbar-do-not-display-main-display.html (only on 1 monitor; drag to 2ndary)
+        Make sure row ends align
     """
-    pygu.moveTo(x=1897,y=998, duration=0.359)
+    #should be pre-selected? moves arrow down if click and already selected
+    # pygu.moveTo(x=1897,y=998, duration=0.359)
+    pygu.moveTo(x=100,y=0, duration=0.159)
     pygu.doubleClick()
     cnt = max([int(i[3:-4]) for i in os.listdir("data_pics")], 
               default = -1) + 1
     if cnt > 0:
         print(f"Screen shots start at {cnt}")
+    reps = 0
     while not is_at_bottom():
         im = pygu.screenshot()
         if is_cropped:
-            crop_fullscreen(im).save(f"data_pics\img{cnt}.png")
+            if reps == 0:
+                im.save("data_pics\\template_del.png")
+            im = crop_fullscreen(im, reuse_im_path = "data_pics\\template_del.png")
         else:
-            im.crop((lr_offset, 0, FSW-lr_offset, FSH)).save(f"data_pics\img{cnt}.png")
-        
-        #don't think SSE checks for automated behavior; but just in case
+            im = im.crop((LR_OFFSET, 0, FSW-LR_OFFSET, FSH))
+        im.save(f"data_pics\img{cnt}.png")
+
         cnt += 1
-        if cnt < 2:
-            time.sleep(2 + 3*random.random())
+        reps += 1
+        #don't think SSE checks for automated behavior; but just in case
+        if reps < 4:
+            pass
+            # time.sleep(2 + 3*random.random())
         else:
-            time.sleep(5 + 30*random.random())
+            break
+            # time.sleep(5 + 30*random.random())
         pygu.keyDown("pgdn"); time.sleep(0.1 + random.random()/10); pygu.keyUp("pgdn");
-
-    print(f"Screen shots end at {cnt}")
-
+    
+    os.remove(f"data_pics\\template_del.png")
+    print(f"Screen shots end at {cnt-1}")
+    
+take_all_screenshots(is_cropped = True)
+#%%
 def expand_strikes():
     """expands all hiden options; as bunched by expiry under single line
     runtime: ~2'. Faster to do by hand
@@ -175,10 +242,6 @@ def expand_strikes():
                     time.sleep(1)
         pygu.keyDown("pgdn"); time.sleep(0.1 + random.random()/10); pygu.keyUp("pgdn");
 
-#left top right bottom
-cropper = lambda im: im.crop((10, 422, 1910,1010)) #for values
-id_crop = lambda im: im.crop((158, 489, 360, 980)) #for just contract details
-
 def _remove_duplicates():
     """filter by eg. GME 03/19/2023 950 C
      NOTE: THis would remove values for the same contract collected at different times
@@ -186,6 +249,8 @@ def _remove_duplicates():
     cnt = int(max(os.listdir(f"{github_dir}\Market_Gamma_(GME)\data_pics"),
                   key = lambda i: i[3:-4]
                   )[3:-4])
+    #for just contract details ('GME 03/19/2023 950 C') on full screen im
+    id_crop = lambda im: im.crop((158, 489, 360, 980)) 
     last = id_crop(
             Image.open(f"{github_dir}\Market_Gamma_(GME)\data_pics\img{cnt}.png"))
     cnt -= 1
@@ -205,9 +270,12 @@ def _remove_duplicates():
         cnt -= 1
 
 #17 indexes
-def get_boundry(header, plot_check=False):
+def get_boundry(header, plot_check=False, remove_variable_existance = True):
     """get box that seperate header columns of a header only image
     plot_check: visually plots to confirm where ix marked
+    remove_variable_existance: remove columns("Last Trade", "Change")
+        whose values aren't in every row. Only set to false if are going to
+        process on row by row basis and can deal w/ non-existance
     """
     header_arr = np.array(header.crop((0,10, 1595,24)))
 
@@ -252,27 +320,23 @@ def get_boundry(header, plot_check=False):
     if col_names[-1] == 'IV':
         del col_names[-1] 
         del header_bnd_box[-1]
-    #these values aren't in every row, can't tell which row apply too
-    bad_ix = col_names.index("Last Trade")
-    bad_ix2 = col_names.index("Change")
-    del col_names[bad_ix], header_bnd_box[bad_ix],
-    del  col_names[bad_ix2-1], header_bnd_box[bad_ix2-1]
+    if remove_variable_existance:    
+   f #these values aren't in every row, can't tell which row apply too
+        bad_ix = col_names.index("Last Trade")
+        bad_ix2 = col_names.index("Change")
+        del col_names[bad_ix], header_bnd_box[bad_ix],
+        del  col_names[bad_ix2-1], header_bnd_box[bad_ix2-1]
     return col_names, header_bnd_box
 
 #returns boundries for seperating columns on the header
-header_crop_only = get_header_bnd_bx()
-header = Image.open("data_pics\img0.png").convert('L'
+header_crop_only = get_header_bnd_bx(im=im.crop((12, 0, FSW-12, FSH)))
+header = Image.open("data_pics\img0.png").crop((12, 0, FSW-12, FSH)).convert('L'
                                                   ).crop(header_crop_only)
-col_names, header_bnd_box = get_boundry(header)
-
-name2ix = {n:ix for ix,n in enumerate(col_names)}
+col_names, header_bnd_box = get_boundry(header, plot_check=True)
 
 # from header clipping to screen shot
-#%%update w/ new API
-
-header2screen = lambda b: (b[0]+LR_OFFSET, head_bot, b[2]+LR_OFFSET, sh)
-screen_bnd = [header2screen(bx) for bx in header_bnd_box]
-
+# header2screen = lambda b: (b[0]+LR_OFFSET, head_bot, b[2]+LR_OFFSET, sh)
+# screen_bnd = [header2screen(bx) for bx in header_bnd_box]
 #%%
 def _crop2row(im, bnd, shrink_w = 0):
     """returns a single row based on bounds; preserving im width* 
@@ -315,15 +379,15 @@ def _crop2cell(im, col_bnd, row_bnd):
            row_bnd[3])
     return im.crop(bnd)
 
-def _cut_subheaders(img_path):
+def _cut_subheaders(im):
     """only get data rows; cutout any subheaders in the middle of text 
      eg. "Puts Mar 19, 2021 (Fri: 03 days)" get removed
          the grey bars in middle/at top
      """
-    im = Image.open(img_path)
     sw, sh = im.size
-    data_pieces = list(pygu.locateAll("header_down_arrow.png", img_path))
+    data_pieces = list(pygu.locateAll("header_down_arrow.png", im))
     #need to cut desktop icon bar at bottom; else will be counted as a row
+    if has_taskbar
     split_tops = [t for _,t,*_ in data_pieces] + [sh-63]
     data_im = []
     for t1,t2 in zip(split_tops[:-1], split_tops[1:]): 
@@ -369,12 +433,13 @@ def _make_row_boundries(new_im):
                              new_im.size[1] - min(c[:,1]) + 3)
     return [contour2box(c) for c in contours] 
 
-img_path = "data_pics\img0.png"
-new_im = _cut_subheaders(img_path)
 
+im = Image.open("data_pics\img0.png").crop((12, 0, FSW-12, FSH))
+new_im = _cut_subheaders(im)
 full_row_bnds = _make_row_boundries(new_im)
 
-# full_row = new_im.crop(full_row_bnds[0]).show()
+# #Works but not useful
+full_row = new_im.crop(full_row_bnds[-1])
 # full_row.save("data_table.png")
 # full_row.show()
 # _crop2col(new_im, header_bnd_box[1], shrink_h = 29).show()
