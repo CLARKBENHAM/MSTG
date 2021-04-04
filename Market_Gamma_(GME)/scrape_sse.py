@@ -44,6 +44,7 @@ import matplotlib.pyplot as plt
 
 from functools import lru_cache#doesn't work for nonhashable fns
 import collections
+from itertools import groupby
 
 #crop box order: (left top right bottom)
 LR_OFFSET = 12#amount to cut from sides of screen
@@ -80,8 +81,11 @@ def get_header_bnd_bx(im = "data_pics\img0.png", ret_header_top = False):
     """
     if not isinstance(im, str) or os.path.exists(im):
         _, head_bot, *_ = pygu.locate("header_top_border.png",
-                                      im) 
-        sw = im.size[0]
+                                      im)
+        if isinstance(im, str):
+            sw = Image.open(im).size[0]
+        else:
+            sw = im.size[0]
     else:
         print("Invalid Path: using screenshot")
         _, head_bot, *_ = pygu.locate("header_top_border.png",
@@ -177,6 +181,7 @@ def take_all_screenshots(is_cropped = False):
     """
     #should be pre-selected? moves arrow down if click and already selected
     # pygu.moveTo(x=1897,y=998, duration=0.359)
+    t = time.time()
     pygu.moveTo(x=100,y=0, duration=0.159)
     pygu.doubleClick()
     cnt = max([int(i[3:-4]) for i in os.listdir("data_pics")], 
@@ -196,19 +201,23 @@ def take_all_screenshots(is_cropped = False):
 
         cnt += 1
         reps += 1
+        time.sleep(3 + 3*random.random())
         #don't think SSE checks for automated behavior; but just in case
-        if reps < 4:
-            pass
-            # time.sleep(2 + 3*random.random())
-        else:
-            pass
+        # if reps < 4:
+        #     pass
+        #     # time.sleep(2 + 3*random.random())
+        # else:
+        #     pass
             # break
             # time.sleep(5 + 30*random.random())
         pygu.keyDown("pgdn"); time.sleep(0.1 + random.random()/10); pygu.keyUp("pgdn");
     
     os.remove(f"data_pics\\template_del.png")
     print(f"Screen shots end at {cnt-1}")
-    
+    print(f"Total Time: {(time.time()-t)//60:.0f}' {(time.time()-t)%60:.0f} sec")    
+
+# take_all_screenshots(is_cropped = True)
+#%%
 def _expand_strikes():
     """expands all hiden options; as bunched by expiry under single line
     runtime: ~2'. Faster to do by hand
@@ -273,14 +282,15 @@ def _remove_duplicates():
         cnt -= 1
 #%%
 #17 indexes
-def get_boundry(header, plot_check=False, remove_variable_existance_cols = True):
+def get_col_boundry(header, plot_check=False, remove_variable_existance_cols = True):
     """get box that seperate header columns of a header only image
+    header: clipped image of header from get_header_bnd_bx
     plot_check: visually plots to confirm where ix marked
     remove_variable_existance_cols: remove columns("Last Trade", "Change")
         whose values aren't in every row. Only set to false if are going to
         process on row by row basis and can deal w/ non-existance
     """
-    header_arr = np.array(header.crop((0,10, 1595,24)))
+    header_arr = np.array(header.crop((0,10, FSW-2*LR_OFFSET-10,24)))#header.crop((0,10, 1595,24)))
 
     #sep bar is 2 pixels wide and lighter then surrounding
     boundry_ix = []
@@ -302,9 +312,28 @@ def get_boundry(header, plot_check=False, remove_variable_existance_cols = True)
         
     boundry_ix.insert(0,0)
     w,h = header.size
-    boundry_ix += [w-1]
+    # boundry_ix += [w-1]
     header_bnd_box = [(ix1, 0, ix2,h) for ix1, ix2 in zip(boundry_ix[:-1], 
                                                    boundry_ix[1:])]
+    #strikes box includes a space for the 'right arrow' next to the contract row
+    header_bnd_box[0] = (25, 0, header_bnd_box[0][2], header_bnd_box[0][3])    
+    
+    #these values aren't in every row, can't tell which row apply too
+    if remove_variable_existance_cols:    
+        removed_names =  get_col_names(header, 
+                                       header_bnd_box[2:4],
+                                       remove_variable_existance_cols=False)
+        assert ['Last Trade', 'Change'] == removed_names
+        del header_bnd_box[3]
+        del header_bnd_box[2]
+    return header_bnd_box
+
+def get_col_names(header, header_bnd_box, remove_variable_existance_cols = True):
+    """
+    header: clipped image of header from get_header_bnd_bx
+    header_bnd_box: result of get_col_boundry
+
+    """
     col_names = []
     for bx in header_bnd_box:
         ocr = pytesseract.image_to_string(header.crop(bx))
@@ -316,22 +345,13 @@ def get_boundry(header, plot_check=False, remove_variable_existance_cols = True)
             else:
                 raise e
         col_names += [s]
-    #strikes box includes a space for the 'right arrow' next to the contract row
-    header_bnd_box[0] = (15, 0, header_bnd_box[0][2], header_bnd_box[0][3])
 
-    #got a repeat for last value? Not sure why
-    if col_names[-1] == 'IV':
-        del col_names[-1] 
-        del header_bnd_box[-1]
     if remove_variable_existance_cols:    
-    #these values aren't in every row, can't tell which row apply too
-        bad_ix = col_names.index("Last Trade")
-        bad_ix2 = col_names.index("Change")
-        del col_names[bad_ix], header_bnd_box[bad_ix],
-        del  col_names[bad_ix2-1], header_bnd_box[bad_ix2-1]
-    return col_names, header_bnd_box
+        assert "Last Trade" not in col_names, "recheck get_col_boundry, should be excluded"
+        assert "Change" not in col_names, "recheck get_col_boundry, should be excluded"        
+    return col_names
 
-def _crop2row(im, bnd, shrink_w = 0):
+def crop2row(im, bnd, shrink_w = 0):
     """returns a single row based on bounds; preserving im width* 
     shrink_w: extra amount taken off left & Right beyond limits
     bdn: (left, top, right, bottom)"""
@@ -341,7 +361,7 @@ def _crop2row(im, bnd, shrink_w = 0):
            bnd[3])
     return im.crop(bnd)
 
-def _crop2col(im, bnd, shrink_h = 0):
+def crop2col(im, bnd, shrink_h = 0):
     """returns a single col based on bounds; preserving im height
     bdn: (left, top, right, bottom)"""    
     bnd = (bnd[0],
@@ -350,7 +370,7 @@ def _crop2col(im, bnd, shrink_h = 0):
            im.size[1]-shrink_h)
     return im.crop(bnd)
 
-def _crop2cell(im, col_bnd, row_bnd):
+def crop2cell(im, col_bnd, row_bnd):
     """
     Takes a column bound, a row bound and returns the intersection
     """
@@ -363,7 +383,7 @@ def _crop2cell(im, col_bnd, row_bnd):
            row_bnd[3])
     return im.crop(bnd)
 
-def _cut_subheaders(im):
+def cut_subheaders(im):
     """only get data rows; cutout any subheaders in the middle of text 
      eg. "Puts Mar 19, 2021 (Fri: 03 days)" get removed
          the grey bars in middle/at top
@@ -383,22 +403,30 @@ def _cut_subheaders(im):
     for d in data_im:
         new_im.paste(d, (0, y_offset))
         y_offset += d.size[1]
+    #bottom 20 pixels are part of next row in this specific screenshot format
     return new_im
 
-def _make_row_boundries(new_im, header_bnd_box):
+from scipy import signal
+
+def get_row_boundries(new_im, header_bnd_box):
     """
     crop_im: pil image column data 
     header_bnd_box: output of get_header_bnd_box()
     returns list of row boundries for any image with the same height
         (i.e. #of subheaders cut out)
+    Note: If look at images directly, windows photos adds an edge on 
+            the right, bottom that doesn't exist in image
     """
-    crop_im = _crop2col(new_im, header_bnd_box[-1])
+    crop_im = crop2col(new_im, header_bnd_box[-7])#vega
     cv_im = np.array(crop_im)
     result = cv_im.copy()
     
+    #using h-sobel gave too many false positives; instead blurring text horizontally
+    
     _, th_l = cv2.threshold(cv_im, 120, 255, cv2.THRESH_BINARY)
     #erode, dilate have backwards effects, since will invert colors. erode makes more black->more white
-    kernel_hor = np.ones((5, 50), dtype=np.uint8)#each row is ~26 pixels tall
+    _, im_w = th_l.shape 
+    kernel_hor = np.ones((7, im_w*3//4), dtype=np.uint8)#each row is ~26 pixels tall
     erode = cv2.erode(th_l, kernel_hor)#black squares where each number is
     
     kernel_ones = np.ones((3, 5), dtype=np.uint8)
@@ -438,28 +466,75 @@ def _make_row_boundries(new_im, header_bnd_box):
                              
     return [contour2box(c) for c in contours]
 
-#returns boundries for seperating columns on the header
-# im = Image.open("data_pics\img0.png").crop((12, 0, FSW-12, FSH))
-im = im2
+def _check_boundries(im, bnds, cut_sep = 20):
+    """
+    for box in bns that segment of im will be placed in new image with
+    cut_sep worth of pixel seperation
+    """
+    sort_l_bnds = sorted(bnds, key = lambda i: i[0])
+    bnds_by_left =  [list(g) for _,g in 
+                         groupby(sort_l_bnds , key = lambda i: i[0])]
+    sort_t_bnds = sorted(bnds, key = lambda i: i[1])
+    bnds_by_top = [list(g) for _,g in 
+                   groupby(sort_t_bnds, key = lambda i: i[1])]
+    h_sz = max(
+            [sum(r[3] - r[1] for r in row)
+             for row in bnds_by_left]
+            ) + cut_sep*len(bnds_by_top)
+    w_sz = max(
+            [sum(r[2] - r[0] for r in row) 
+             for row in bnds_by_top]
+            ) + cut_sep*len(bnds_by_left)
+
+    new_im = Image.new('L', (w_sz, h_sz))
+
+    x_offset, y_offset = 0,0
+    for ny, row_bnds in enumerate(bnds_by_top):
+        row_bnds = sorted(row_bnds, key = lambda i: i[2])#left most first
+        for nx, bnd in enumerate(row_bnds):
+            d = im.crop(bnd)
+            new_im.paste(d, (x_offset, y_offset))
+            x_offset += d.size[0] + cut_sep
+        y_offset = max(row_bnds, key = lambda i: i[3])[3] + cut_sep*(ny+1)
+        x_offset = 0
+    new_im.show()
+
+def _check_preprocessing(im_num = (9, 37, 56, 89, 90, 91)):
+    for ix, i in enumerate(im_num):
+        im = Image.open(f"data_pics\img{i}.png")
+        if ix == 0:#can resuse headers
+            header_crop_only = get_header_bnd_bx(im=im)
+            header = im.convert('L').crop(header_crop_only)
+            header_bnd_box = get_col_boundry(header)
+        col_names = get_col_names(header, header_bnd_box)
+        new_im = cut_subheaders(im)
+        
+        full_row_bnds = get_row_boundries(new_im, header_bnd_box)
+        cell_bnds = [(col_bnd[0],
+                       row_bnd[1],
+                       col_bnd[2],
+                       row_bnd[3])
+                     for row_bnd in full_row_bnds
+                     for col_bnd in header_bnd_box]
+        _check_boundries(new_im, cell_bnds)    
+     
+im = Image.open("data_pics\img108.png")
 header_crop_only = get_header_bnd_bx(im=im)
 header = im.convert('L').crop(header_crop_only)
-col_names, header_bnd_box = get_boundry(header, plot_check=False)
+header_bnd_box = get_col_boundry(header)
+col_names = get_col_names(header, header_bnd_box)
+new_im = cut_subheaders(im)
+full_row_bnds = get_row_boundries(new_im, header_bnd_box)
 
-new_im = _cut_subheaders(im)
-
-full_row_bnds = _make_row_boundries(new_im, header_bnd_box)
-
+_check_preprocessing(im_num = (2,3,4))
+#%%
 # #Works but not useful
-full_row = new_im.crop(full_row_bnds[-1])
-full_row.show()
-new_im.crop(full_row_bnds[11]).show()
-new_im.crop(full_row_bnds[0]).show()
 # full_row.save("data_table.png")
 # full_row.show()
-# _crop2col(new_im, header_bnd_box[1], shrink_h = 29).show()
-# _crop2col(new_im, header_bnd_box[1], shrink_h = 0).show()
+# crop2col(new_im, header_bnd_box[1], shrink_h = 29).show()
+# crop2col(new_im, header_bnd_box[1], shrink_h = 0).show()
 
-# single_cell = _crop2cell(new_im, header_bnd_box[1], full_row_bnds[1])
+# single_cell = crop2cell(new_im, header_bnd_box[1], full_row_bnds[1])
 # single_cell.show()
 # single_cell.save("data_table.png")
 #calamari-predict --checkpoint C:\Users\student.DESKTOP-UT02KBN\Downloads\uw3-modern-english\uw3-modern-english\0.ckpt --files "MSTG\Market_Gamma_(GME)\data_table.png"
@@ -531,7 +606,7 @@ def img2values(img_path, col_names=col_names, header_bnd_box=header_bnd_box):
         if n == 'Symbol':
             my_config = '--psm 6'
         else:
-            my_config = '--psm 6 digits tessedit_char_whitelist=-0123456789\\.\\,'
+            my_config = '--psm 6 digits tessedit_char_whitelist=-0123456789\\.,'
         
         ocr1 = pytesseract.image_to_string(cv_im, config= my_config)
         
@@ -592,7 +667,7 @@ df = pd.DataFrame(list(zip(*vals)))
 df.columns = col_names
 df.head()
 #%% extra info by cell; 
-def proc_split_on_row_lines(new_im):
+def proc_split_on_row_lines(im):
     """
     Split data image by col&row into each individal cell
     Returns 
@@ -600,7 +675,21 @@ def proc_split_on_row_lines(new_im):
     df from read image
 
     """
-    pass
+    header_crop_only = get_header_bnd_bx(im=im)
+    header = im.convert('L').crop(header_crop_only)
+    header_bnd_box = get_col_boundry(header)
+    col_names = get_col_names(header, header_bnd_box)
+    new_im = cut_subheaders(im)   
+    full_row_bnds = get_row_boundries(new_im, header_bnd_box)
+    cell_bnds = [(col_bnd[0],
+                   row_bnd[1],
+                   col_bnd[2],
+                   row_bnd[3])
+                 for row_bnd in full_row_bnds
+                 for col_bnd in header_bnd_box]
+    
+    return cell_bnds
+
 #WARNING: bottom, right sides of img in MSFT display have a bevel added; not actually on img. 
 #       eg Image.fromarray(255*np.ones((500,500))).show()
 crop_im = new_im.crop(header2clipped(header_bnd_box[9]))
