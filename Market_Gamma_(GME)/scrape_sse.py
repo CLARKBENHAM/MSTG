@@ -384,7 +384,7 @@ def crop2cell(im, col_bnd, row_bnd):
            row_bnd[3])
     return im.crop(bnd)
 
-def cut_subheaders(im):
+def cut_subheaders(im):#GRIBB!!
     """only get data rows; cutout any subheaders in the middle of text 
      eg. "Puts Mar 19, 2021 (Fri: 03 days)" get removed
          the grey bars in middle/at top
@@ -477,8 +477,8 @@ def _check_boundries(im, bnds, cut_sep = 20):
     bnds_by_top = [list(g) for _,g in 
                    groupby(sort_t_bnds, key = lambda i: i[1])]
     h_sz = max(
-            [sum(r[3] - r[1] for r in row)
-             for row in bnds_by_left]
+            [sum(r[3] - r[1] for r in col)
+             for col in bnds_by_left]
             ) + cut_sep*len(bnds_by_top)
     w_sz = max(
             [sum(r[2] - r[0] for r in row) 
@@ -498,7 +498,10 @@ def _check_boundries(im, bnds, cut_sep = 20):
         x_offset = 0
     new_im.show()
 
-def _check_preprocessing(im_num = (9, 37, 56, 89, 90, 91)):
+def _check_preprocessing(im_num = (9, 37, 51, 89, 90, 91)):
+    """for images with file numbered in iterable in_num, will plot the cell croppings
+    for visual inspection
+    """
     for ix, i in enumerate(im_num):
         im = Image.open(f"data_pics\img{i}.png")
         if ix == 0:#can resuse headers
@@ -539,7 +542,8 @@ for ix, pth in enumerate(os.listdir("data_pics")):
         header = im.convert('L').crop(header_crop_only)
         header_bnd_box = get_col_boundry(header)
         col_names = get_col_names(header, header_bnd_box)
-        #try psm 7(1 line) or 8 (1 word)?
+        #try psm 7(1 line) or 8 (1 word)? #no sig improvement where psm 6 fail
+        #char_whitelist doesn't work on Tesseract v4.0
         symbol_config =  '--psm 6'
         numeric_config = '--psm 6 digits tessedit_char_whitelist=-0123456789.,'
         #if is data in a 'Symbol' colum
@@ -559,12 +563,13 @@ for ix, pth in enumerate(os.listdir("data_pics")):
     
     #pytesseract casts to RGB anyway, and thresholding worsens results
     df = pd.DataFrame({col_name:[pytesseract.image_to_string(new_im.crop(b),
-                                                        config = get_config(b))
+                                                             config = get_config(b))
                             for b in col_crop]
                       for col_name, col_crop in cell_bnds.items()
                       })
     
     #Note: bias in using time saved file, not time displayed file
+    df['Filename'] = fname #used4 debugging 
     df['Observed Time'] = datetime.fromtimestamp(fname.stat().st_ctime)
     dfs += [df]
     l_times += [time.time() - loop_t]
@@ -582,6 +587,111 @@ with open("ocrd_dfs", 'wb') as f:
     
 ocr_df = pd.concat(dfs)
 #%%
+col2re = {'Strikes':'\d+\.\d{2}',
+          'Symbol': '[A-Z]+ \d{2}/\d{2}/\d{4} \d+\.\d{2} [CPcp¢]',
+          'Bid': '\d+\.\d{2}',
+          'Midpoint': '\d+\.\d{2}',
+          'Ask': '\d+\.\d{2}',
+          'Volume': '\d+',
+          'Open Int':'\d+',
+          'Delta': '-{0,1}[01]\.\d{4}',
+          'Vega': '\d\.\d{4}',
+          'IV Ask': '\d+\.\d{4}',
+          'IV Bid': '\d+\.\d{4}',
+          'Rho': '\d\.\d{4}',
+          'Theta': '-{0,1}\d\.\d{4}',
+          'IV': '\d+\.\d{4}',
+          'Gamma': '0.\d{4}',
+          #know below are right, non-ocr
+          'Observed Time': '.+', 
+          'Filename': '.+',
+          }
+    
+def _num_invalid_ocr(df):
+    "total number of entries across all cells that don't match regex"
+    check_ix = range(len(df))
+    check_ix = range(99)
+    return sum([all(df.iloc[[ix],:].apply(lambda i: len(re.findall(col2re[i.name],
+                                                            str(i.values[0]))
+                                                  ) == 1)
+                                    ) for ix in check_ix])
+
+def _invalid_cols(df, check_ix = range(99)):
+    "name of columns with entries that don't match regex"
+    # check_ix = range(len(df))
+    return set([s for ix in check_ix 
+                 for s in df.iloc[[ix],:].apply(lambda i: i.name if 
+                                                          len(re.findall(col2re[i.name],
+                                                                         str(i.values[0]))
+                                                              ) == 0
+                                                          else '')
+                 if s != ''])
+
+def _invalid_iloc(df,  check_ix = range(99)):
+    "iloc ix of entries that don't match regex"
+    return [(ix, df.columns.get_loc(s)) for ix in check_ix 
+                 for s in df.iloc[[ix],:].apply(lambda i: i.name if 
+                                                          len(re.findall(col2re[i.name],
+                                                                         str(i.values[0]))
+                                                              ) == 0
+                                                          else '')
+                 if s != '']
+
+def _plot_invalid_cells(df):
+    "creates image of all invalid cells, with pytesseracts guess next to it"
+    inv_ix = _invalid_iloc(df, check_ix = range(99))
+    bad_cells = []
+    for rix, cix in inv_ix:
+        fname = df.iloc[rix]['Filename']
+        im = Image.open(fname)
+        new_im = cut_subheaders(im)   
+        full_row_bnds = get_row_boundries(new_im, header_bnd_box)
+        col_bnd = header_bnd_box[cix]
+        row_bnd = full_row_bnds[df.index[rix]]
+        cell_bnds = (col_bnd[0],
+                            row_bnd[1],
+                            col_bnd[2],
+                            row_bnd[3])
+        bad_cells += [new_im.crop(cell_bnds)]
+    mx_h = 20
+    cut_sep = 20
+    get_w = lambda i:  i.size[0]# - i.size[0]
+    get_h = lambda i:  i.size[1]# - i.size[1]
+    bad_cells = [bad_cells[ix*mx_h:(ix+1)*mx_h]
+                for ix in range(len(bad_cells)//mx_h + 1)]
+    
+    h_sz = max(
+            [sum(get_h(r) for r in col)
+             + cut_sep*len(col)
+             for col in bad_cells]
+            )
+    w_sz = max(
+            [sum(get_w(bad_cells[c_ix][r_ix]) for c_ix in range(len(bad_cells))
+                 if r_ix < len(bad_cells[c_ix])) 
+             for r_ix in range(max(map(len, bad_cells)))]
+            ) + cut_sep*len(bad_cells)
+    canvas = Image.new('L', (w_sz, h_sz))
+    
+    x_offset, y_offset = 0,0
+    offsets = []
+    for ix, col in enumerate(bad_cells):
+        for r in col:
+            canvas.paste(r, (x_offset, y_offset))
+            offsets += [(x_offset, y_offset)]
+            y_offset += get_h(r) + cut_sep
+        x_offset += get_w(max(col, key = lambda r: get_w(r))) +  cut_sep*(ix+1)
+        y_offset = 0
+    
+    d = ImageDraw.Draw(canvas)
+    for (rix, cix), (x_offset, y_offset) in zip(inv_ix, offsets):
+        d.text((x_offset + 19, y_offset + 10),
+               repr(df.iloc[rix, cix]),
+               fill=0,#black
+               )
+    canvas.show()
+        
+_plot_invalid_cells(ocr_df)    
+#%%
 def _cast_ocr(s):
     if not isinstance(s, str):
         return s
@@ -596,15 +706,19 @@ def _cast_ocr(s):
         elif s[-1] == ".":
             s = s[:-1]
         return s.strip(' ')
+
+def _proc_ocr_col(c):
+    pass        
     
 def proc_ocr_df(df):
     "converts OCR'd results from screenshot into other columns"
-    df = df.apply(lambda r: r.apply(_cast_ocr), axis=1)
-    df = df.astype({n : str if n == 'Symbol' else
-                        int if n in ('Volume', 'Open Int') else
-                        np.datetime64 if n == 'Observed Time' else
-                        float
-                    for n in df.columns})   
+    df = df.apply(_proc_ocr_col)
+    # df = df.apply(lambda r: r.apply(_cast_ocr), axis=1)
+    # df = df.astype({n : str if n == 'Symbol' else
+    #                     int if n in ('Volume', 'Open Int') else
+    #                     np.datetime64 if n == 'Observed Time' else
+    #                     float
+    #                 for n in df.columns})   
     df['Is Call'] = df['Symbol'].apply(lambda i: i[-1])
     assert all(df['Is Call'].isin(['C', 'c', 'P', 'p'])), "invalid reading of Symbol column"
     df['Is Call'] = df['Is Call'].isin(['C', 'c', '¢'])
@@ -622,6 +736,17 @@ def _check_ocr_results(df):
     assert all(df[['Vega', 'Volume', 'Open Int', 'Bid', 'Midpoint', 'Ask']] >= 0)
     assert all(df.apply(lambda r: r['Strikes'] in r['Symbol'], axis=1))
     assert all(df['Is_Call'] & df['Delta']>=0) and all(~df['Is_Call'] & df['Delta'] <=0)
+    #even ~$4 stock has options priced in whole dollar or 0.5$ increments
+    assert all(df['Strikes'].apply(lambda i: i%1 in (0.5, 0.0))), "invalid strike ending"
+    
+    #check monotonic
+    g_is_mono = lambda g: all(g[c].is_monotonic or g[c].is_monotonic_decreasing
+                              for c in ['Bid', 'Midpoint', 'Ask', 'Delta', 'Vega',
+                                        'IV Ask', 'IV Bid', 'Rho', 'Theta', 'IV'])
+    g_by_strike = df.groupby(['Is_Call', 'Strike'])
+    g_by_exp = df.groupby(['Is_Call', 'Expiry'])
+    assert all(g_is_mono(g) for g in g_by_strike)    
+    assert all(g_is_mono(g) for g in g_by_exp)    
     
     #timespreads all positive
     g_by_strike = df.groupby(['Is_Call', 'Strike'])
@@ -647,10 +772,12 @@ def _check_option_arb(df):
     
     #iron butterflys negative
     
-    #no iron butterfly, regular arb
+    #no iron butterfly, regular butterly arb
     
     #boxes positive
-    
+
+proc_df = proc_ocr_df(ocr_df)
+_check_ocr_results(proc_df)
     
 #%%
 # #Works but not useful
