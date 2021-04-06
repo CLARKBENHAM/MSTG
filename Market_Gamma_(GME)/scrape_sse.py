@@ -45,6 +45,7 @@ import matplotlib.pyplot as plt
 from functools import lru_cache#doesn't work for nonhashable fns
 import collections
 from itertools import groupby
+import pathlib
 
 #crop box order: (left top right bottom)
 LR_OFFSET = 12#amount to cut from sides of screen
@@ -406,8 +407,6 @@ def cut_subheaders(im):
     #bottom 20 pixels are part of next row in this specific screenshot format
     return new_im
 
-from scipy import signal
-
 def get_row_boundries(new_im, header_bnd_box):
     """
     crop_im: pil image column data 
@@ -450,7 +449,7 @@ def get_row_boundries(new_im, header_bnd_box):
 
     # pdb.set_trace()
     #if no white space at bottom then got a portion of a row, want to exclude anyway
-    return [(0,t-1, new_im.size[0], b+1) for t,b in zip(row_breakpoints[:-1],
+    return [(0,t, new_im.size[0], b) for t,b in zip(row_breakpoints[:-1],
                                                      row_breakpoints[1:])]
     
     #looking for white holes in black background, so colors inverted
@@ -508,7 +507,6 @@ def _check_preprocessing(im_num = (9, 37, 56, 89, 90, 91)):
             header_bnd_box = get_col_boundry(header)
         col_names = get_col_names(header, header_bnd_box)
         new_im = cut_subheaders(im)
-        
         full_row_bnds = get_row_boundries(new_im, header_bnd_box)
         cell_bnds = [(col_bnd[0],
                        row_bnd[1],
@@ -518,15 +516,142 @@ def _check_preprocessing(im_num = (9, 37, 56, 89, 90, 91)):
                      for col_bnd in header_bnd_box]
         _check_boundries(new_im, cell_bnds)    
      
-im = Image.open("data_pics\img108.png")
-header_crop_only = get_header_bnd_bx(im=im)
-header = im.convert('L').crop(header_crop_only)
-header_bnd_box = get_col_boundry(header)
-col_names = get_col_names(header, header_bnd_box)
-new_im = cut_subheaders(im)
-full_row_bnds = get_row_boundries(new_im, header_bnd_box)
+# im = Image.open("data_pics\img108.png")
+# header_crop_only = get_header_bnd_bx(im=im)
+# header = im.convert('L').crop(header_crop_only)
+# header_bnd_box = get_col_boundry(header)
+# col_names = get_col_names(header, header_bnd_box)
+# new_im = cut_subheaders(im)
+# full_row_bnds = get_row_boundries(new_im, header_bnd_box)
 
-_check_preprocessing(im_num = (2,3,4))
+# _check_preprocessing(im_num = (2,3,4))
+#%%
+# def _proc_all_img():        
+t = time.time()
+dfs = []
+l_times = []
+for ix, pth in enumerate(os.listdir("data_pics")):
+    loop_t = time.time()
+    fname = pathlib.Path(f"data_pics\\{pth}")
+    im = Image.open(fname)
+    if ix == 0:
+        header_crop_only = get_header_bnd_bx(im=im)
+        header = im.convert('L').crop(header_crop_only)
+        header_bnd_box = get_col_boundry(header)
+        col_names = get_col_names(header, header_bnd_box)
+        #try psm 7(1 line) or 8 (1 word)?
+        symbol_config =  '--psm 6'
+        numeric_config = '--psm 6 digits tessedit_char_whitelist=-0123456789.,'
+        #if is data in a 'Symbol' colum
+        get_config = lambda b: symbol_config \
+                            if b[0] == header_bnd_box[1][0] \
+                            else numeric_config                            
+
+    new_im = cut_subheaders(im)   
+    full_row_bnds = get_row_boundries(new_im, header_bnd_box)
+    cell_bnds = {col_name: [(col_bnd[0],
+                            row_bnd[1],
+                            col_bnd[2],
+                            row_bnd[3])
+                            for row_bnd in full_row_bnds]
+                 for col_bnd, col_name in zip(header_bnd_box,
+                                              col_names)}
+    
+    #pytesseract casts to RGB anyway, and thresholding worsens results
+    df = pd.DataFrame({col_name:[pytesseract.image_to_string(new_im.crop(b),
+                                                        config = get_config(b))
+                            for b in col_crop]
+                      for col_name, col_crop in cell_bnds.items()
+                      })
+    
+    #Note: bias in using time saved file, not time displayed file
+    df['Observed Time'] = datetime.fromtimestamp(fname.stat().st_ctime)
+    dfs += [df]
+    l_times += [time.time() - loop_t]
+    print(f"Loop Time: {(time.time() - loop_t)//60:.0f}' {(time.time() - loop_t)%60:.0f} sec")    
+    # if ix > 4:
+    #     break                                               
+duration = time.time()-t
+print(f"Total Time:{duration//3600:.0f}h  {(duration%3600)//60:.0f}' {(duration)%60:.0f}\"")
+print(f"{np.mean(l_times):.0f}\" per ocr im, SD {np.std(l_times):.2f}\" vs. <4\" per screenshot")
+# Total Time:2h  14' 9"
+# 71" per ocr im, SD 3.75" vs. <4" per screenshot
+
+with open("ocrd_dfs", 'wb') as f:
+    pickle.dump(dfs, f)
+    
+ocr_df = pd.concat(dfs)
+#%%
+def _cast_ocr(s):
+    if not isinstance(s, str):
+        return s
+    elif s == '\x0c':#unchecked assumtion
+        return 0
+    else:
+        s1 = s
+        s = s.replace("\n\x0c", "")
+        if s == '' or s[-1] == ".":
+            print(f"Guessed on {s1}")
+            return 0
+        elif s[-1] == ".":
+            s = s[:-1]
+        return s.strip(' ')
+    
+def proc_ocr_df(df):
+    "converts OCR'd results from screenshot into other columns"
+    df = df.apply(lambda r: r.apply(_cast_ocr), axis=1)
+    df = df.astype({n : str if n == 'Symbol' else
+                        int if n in ('Volume', 'Open Int') else
+                        np.datetime64 if n == 'Observed Time' else
+                        float
+                    for n in df.columns})   
+    df['Is Call'] = df['Symbol'].apply(lambda i: i[-1])
+    assert all(df['Is Call'].isin(['C', 'c', 'P', 'p'])), "invalid reading of Symbol column"
+    df['Is Call'] = df['Is Call'].isin(['C', 'c', '¢'])
+    df['Expiry'] = df['Symbol'].apply(lambda i: datetime.strptime(i.split(' ')[1],
+                                                                  '%m/%d/%Y'))
+    
+    return df
+
+def _check_ocr_results(df):
+    """"checks option arbitrage conditions/ definitions
+    a sufficent condition for ocr errors, but not nessisary.
+        (won't detect volume/OI issues)
+    """
+    assert all(df['Bid'] < df['Midpoint']) and all(df['Midpoint'] < df['Ask'])
+    assert all(df[['Vega', 'Volume', 'Open Int', 'Bid', 'Midpoint', 'Ask']] >= 0)
+    assert all(df.apply(lambda r: r['Strikes'] in r['Symbol'], axis=1))
+    assert all(df['Is_Call'] & df['Delta']>=0) and all(~df['Is_Call'] & df['Delta'] <=0)
+    
+    #timespreads all positive
+    g_by_strike = df.groupby(['Is_Call', 'Strike'])
+    assert all([(np.argsort(g['Expiry']) == np.argsort(g['Ask'])) \
+                & (np.argsort(g['Expiry']) == np.argsort(g['Bid']))
+                for g in g_by_exp]), "timespread isn't positive"
+
+    #prices monotonic in strike
+    g_by_exp = df.groupby(['Is_Call', 'Expiry'])
+    assert all([np.argsort(g['Strike']) == np.argsort(g['Ask'])
+                if g['Is Call'][0] else
+                np.argsort(g['Strike'], reverse=true) == np.argsort(g['Ask'])   #put         
+                for g in g_by_exp]), "prices not monotonic"
+        
+def _check_option_arb(df):
+    """"checks option arbitrage conditions/ definitions
+    """
+    #butterflys negative
+    def _make_butterflys(g):
+        "takes groupby object by Is Call and expiry date"
+        return [(g[ix-1], g[ix], g[ix], g[ix+1]) for ix in range(1, len(g)-1)]
+    
+    
+    #iron butterflys negative
+    
+    #no iron butterfly, regular arb
+    
+    #boxes positive
+    
+    
 #%%
 # #Works but not useful
 # full_row.save("data_table.png")
@@ -675,20 +800,7 @@ def proc_split_on_row_lines(im):
     df from read image
 
     """
-    header_crop_only = get_header_bnd_bx(im=im)
-    header = im.convert('L').crop(header_crop_only)
-    header_bnd_box = get_col_boundry(header)
-    col_names = get_col_names(header, header_bnd_box)
-    new_im = cut_subheaders(im)   
-    full_row_bnds = get_row_boundries(new_im, header_bnd_box)
-    cell_bnds = [(col_bnd[0],
-                   row_bnd[1],
-                   col_bnd[2],
-                   row_bnd[3])
-                 for row_bnd in full_row_bnds
-                 for col_bnd in header_bnd_box]
-    
-    return cell_bnds
+    pass
 
 #WARNING: bottom, right sides of img in MSFT display have a bevel added; not actually on img. 
 #       eg Image.fromarray(255*np.ones((500,500))).show()
