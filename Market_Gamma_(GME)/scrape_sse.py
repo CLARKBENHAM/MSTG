@@ -49,7 +49,8 @@ import pathlib
 
 #crop box order: (left top right bottom)
 LR_OFFSET = 12#amount to cut from sides of screen
-FSW, FSH = pygu.screenshot().size#full screen width
+FSW, FSH = pygu.screenshot().size#full screen 
+VALID_ROW_HTS = range(22,29)#pixel size of valid rows
 
 def memoize(func):
     """incase potentially have unhashable inputs and need to filter out
@@ -384,14 +385,17 @@ def crop2cell(im, col_bnd, row_bnd):
            row_bnd[3])
     return im.crop(bnd)
 
-def cut_subheaders(im):#GRIBB!!
+def cut_subheaders(im, confidence=0.95):
     """only get data rows; cutout any subheaders in the middle of text 
      eg. "Puts Mar 19, 2021 (Fri: 03 days)" get removed
          the grey bars in middle/at top
     also cuts taskbar at bottom, if exists
+    confidence: < 0.98
      """
     sw, sh = im.size
-    data_pieces = list(pygu.locateAll("header_down_arrow.png", im))
+    data_pieces = list(pygu.locateAll("header_down_arrow.png",
+                                      im,
+                                      confidence=confidence))
     #need to cut desktop icon bar at bottom; else will be counted as a row
     split_tops = [t for _,t,*_ in data_pieces] + [get_taskbar_top(im)]
     data_im = []
@@ -407,6 +411,56 @@ def cut_subheaders(im):#GRIBB!!
     #bottom 20 pixels are part of next row in this specific screenshot format
     return new_im
 
+#%%
+#have issue of empty cells!?!?
+def _check_row_cropping(bad_cells, inv_ix):
+    """result of _plot_invalid_cells
+    checks confidence to cut_subheaders and 
+    get_row_boundries
+    """
+    #prev crop
+    bad_crop = [b for ix,b in enumerate(bad_cells) 
+                if b.size[1] not in VALID_ROW_HTS]
+    _plot_imgs_concat(bad_crop).show()
+    
+    #bad row croppping
+    bad_files = list(set([ocr_df.iloc[inv_ix[ix][0], 
+                                      ocr_df.columns.get_loc("Filename")]
+                          for ix in bad_crop]))
+    bad_im_num = [int(re.findall("(\d+)", str(i))[0]) for i in bad_files]
+    _check_preprocessing(im_num = bad_im_num, bad_only=True)
+    
+    #bad cut_subheader, check new confidence
+    bad_crop_ix = [ix for ix,b in enumerate(bad_cells) 
+                   if b.size[1] not in VALID_ROW_HTS]
+    
+    crop_inv_ix = [inv_ix[ix] for ix in bad_crop_ix]
+    for confidence in (0.97, 0.95, 0.93, 0.9):
+        nbad_cells = []
+        prev_fname = ''
+        ims = []
+        for rix, cix in crop_inv_ix:
+            fname = df.iloc[rix]['Filename']
+            if fname != prev_fname:
+                im = Image.open(fname)
+                new_im = cut_subheaders(im, confidence = confidence)   
+                ims += [new_im]
+                full_row_bnds = get_row_boundries(new_im, header_bnd_box)
+                prev_fname = fname
+            col_bnd = header_bnd_box[cix]
+            row_bnd = full_row_bnds[df.index[rix]]
+            cell_bnds = (col_bnd[0],
+                                row_bnd[1],
+                                col_bnd[2],
+                                row_bnd[3])
+            # if  row_bnd[3] - row_bnd[1] > 16:
+            nbad_cells += [new_im.crop(cell_bnds)]
+            print(row_bnd, row_bnd[3] - row_bnd[1])
+            #title doesn't work on windows?!?
+        _plot_imgs_concat(nbad_cells).show(title=f"Bad Crops with cut_subheaders(confidence={confidence})")
+        break
+
+#%%
 def get_row_boundries(new_im, header_bnd_box):
     """
     crop_im: pil image column data 
@@ -425,11 +479,12 @@ def get_row_boundries(new_im, header_bnd_box):
     _, th_l = cv2.threshold(cv_im, 120, 255, cv2.THRESH_BINARY)
     #erode, dilate have backwards effects, since will invert colors. erode makes more black->more white
     _, im_w = th_l.shape 
-    kernel_hor = np.ones((7, im_w*3//4), dtype=np.uint8)#each row is ~26 pixels tall
+    kernel_hor = np.ones((5, im_w*3//4), dtype=np.uint8)#each row is ~26 pixels tall
     erode = cv2.erode(th_l, kernel_hor)#black squares where each number is
     
-    kernel_ones = np.ones((3, 5), dtype=np.uint8)
+    kernel_ones = np.ones((min(VALID_ROW_HTS)//2, 2), dtype=np.uint8)
     blocks = cv2.dilate(erode, kernel_ones)
+    # pdb.set_trace()
     
     h_sum = np.sum(blocks, axis=1)
     empty_row_ix = np.where(h_sum != 0)[0]
@@ -447,10 +502,15 @@ def get_row_boundries(new_im, header_bnd_box):
     if row_breakpoints[1] < 8:
        del row_breakpoints[0]         
 
-    # pdb.set_trace()
     #if no white space at bottom then got a portion of a row, want to exclude anyway
-    return [(0,t, new_im.size[0], b) for t,b in zip(row_breakpoints[:-1],
+    out = [(0,t, new_im.size[0], b) for t,b in zip(row_breakpoints[:-1],
                                                      row_breakpoints[1:])]
+    bad_rows = [i for i in out if i[3]-i[1] not in VALID_ROW_HTS]
+    if len(bad_rows) > 0:
+        print(f"WARNING!! removing {bad_rows} boundries")
+
+    pdb.set_trace()        
+    return [i for i in out if i[3]-i[1] in VALID_ROW_HTS]
     
     #looking for white holes in black background, so colors inverted
     contours, hierarchy  = cv2.findContours(~blocks, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
@@ -465,6 +525,8 @@ def get_row_boundries(new_im, header_bnd_box):
                              
     return [contour2box(c) for c in contours]
 
+_check_preprocessing(im_num = (55,111,112, 1), bad_only=False)
+#%%
 def _check_boundries(im, bnds, cut_sep = 20):
     """
     for box in bns that segment of im will be placed in new image with
@@ -498,9 +560,10 @@ def _check_boundries(im, bnds, cut_sep = 20):
         x_offset = 0
     new_im.show()
 
-def _check_preprocessing(im_num = (9, 37, 51, 89, 90, 91)):
+def _check_preprocessing(im_num = (9, 37, 51, 89, 90, 91, 111), bad_only=False):
     """for images with file numbered in iterable in_num, will plot the cell croppings
     for visual inspection
+    bad_only: those bounds which have non-standard height outside [22-28]
     """
     for ix, i in enumerate(im_num):
         im = Image.open(f"data_pics\img{i}.png")
@@ -517,6 +580,11 @@ def _check_preprocessing(im_num = (9, 37, 51, 89, 90, 91)):
                        row_bnd[3])
                      for row_bnd in full_row_bnds
                      for col_bnd in header_bnd_box]
+        if bad_only:
+            cell_bnds = [i for i in cell_bnds if i[3]-i[1] not in VALID_ROW_HTS]
+            if len(cell_bnds) == 0:#all good
+                print(f"No errors for {i}")
+                continue
         _check_boundries(new_im, cell_bnds)    
      
 # im = Image.open("data_pics\img108.png")
@@ -529,7 +597,7 @@ def _check_preprocessing(im_num = (9, 37, 51, 89, 90, 91)):
 
 # _check_preprocessing(im_num = (2,3,4))
 #%%
-# def _proc_all_img():        
+# def proc_all_img():        
 t = time.time()
 dfs = []
 l_times = []
@@ -588,7 +656,8 @@ with open("ocrd_dfs", 'wb') as f:
 ocr_df = pd.concat(dfs)
 #%%
 col2re = {'Strikes':'\d+\.\d{2}',
-          'Symbol': '[A-Z]+ \d{2}/\d{2}/\d{4} \d+\.\d{2} [CPcp¢]',
+           #.50 C and 7.50 both valid entries
+          'Symbol': '[A-Z]+ \d{2}/\d{2}/\d{4} \d*\.\d{2} [CPcp¢]',
           'Bid': '\d+\.\d{2}',
           'Midpoint': '\d+\.\d{2}',
           'Ask': '\d+\.\d{2}',
@@ -617,8 +686,9 @@ def _num_invalid_ocr(df):
                                     ) for ix in check_ix])
 
 def _invalid_cols(df, check_ix = range(99)):
-    "name of columns with entries that don't match regex"
-    # check_ix = range(len(df))
+    """name of columns with entries that don't match regex
+        from rows with iloc in check_ix
+    """
     return set([s for ix in check_ix 
                  for s in df.iloc[[ix],:].apply(lambda i: i.name if 
                                                           len(re.findall(col2re[i.name],
@@ -628,7 +698,7 @@ def _invalid_cols(df, check_ix = range(99)):
                  if s != ''])
 
 def _invalid_iloc(df,  check_ix = range(99)):
-    "iloc ix of entries that don't match regex"
+    "iloc ix of entries that don't match regex, given row iloc in check_ix"
     return [(ix, df.columns.get_loc(s)) for ix in check_ix 
                  for s in df.iloc[[ix],:].apply(lambda i: i.name if 
                                                           len(re.findall(col2re[i.name],
@@ -637,41 +707,30 @@ def _invalid_iloc(df,  check_ix = range(99)):
                                                           else '')
                  if s != '']
 
-def _plot_invalid_cells(df):
-    "creates image of all invalid cells, with pytesseracts guess next to it"
-    inv_ix = _invalid_iloc(df, check_ix = range(99))
-    bad_cells = []
-    for rix, cix in inv_ix:
-        fname = df.iloc[rix]['Filename']
-        im = Image.open(fname)
-        new_im = cut_subheaders(im)   
-        full_row_bnds = get_row_boundries(new_im, header_bnd_box)
-        col_bnd = header_bnd_box[cix]
-        row_bnd = full_row_bnds[df.index[rix]]
-        cell_bnds = (col_bnd[0],
-                            row_bnd[1],
-                            col_bnd[2],
-                            row_bnd[3])
-        bad_cells += [new_im.crop(cell_bnds)]
-    mx_h = 20
-    cut_sep = 20
+def _plot_imgs_concat(bad_cells, mx_h = 20, cut_sep = 20, ret_offset = False):
+    """given a list of images, plot them going down in column order
+        bad_cells: [<PIL.Image.Image>, ...]
+        mx_h: number of images to display in 1 column
+        cut_sep: number of pixels to put between images on all sides
+        ret_offset: include the top left pixel of where put cells 
+    """
     get_w = lambda i:  i.size[0]# - i.size[0]
     get_h = lambda i:  i.size[1]# - i.size[1]
     bad_cells = [bad_cells[ix*mx_h:(ix+1)*mx_h]
                 for ix in range(len(bad_cells)//mx_h + 1)]
     
+    #max height in each column, since that used for offset when writing to im
     h_sz = max(
-            [sum(get_h(r) for r in col)
-             + cut_sep*len(col)
-             for col in bad_cells]
-            )
-    w_sz = max(
-            [sum(get_w(bad_cells[c_ix][r_ix]) for c_ix in range(len(bad_cells))
-                 if r_ix < len(bad_cells[c_ix])) 
-             for r_ix in range(max(map(len, bad_cells)))]
-            ) + cut_sep*len(bad_cells)
-    canvas = Image.new('L', (w_sz, h_sz))
-    
+            sum(get_h(r) for r in col)
+            for col in bad_cells
+            ) + cut_sep*len(bad_cells[0]) #max num rows 
+    #sum of max width in each col
+    w_sz = sum(
+            [get_w(max(col, key = lambda r: get_w(r)))
+              for col in bad_cells]
+            ) + cut_sep*len(bad_cells) #num cols
+
+    canvas = Image.new('L', (w_sz, h_sz))    
     x_offset, y_offset = 0,0
     offsets = []
     for ix, col in enumerate(bad_cells):
@@ -679,9 +738,35 @@ def _plot_invalid_cells(df):
             canvas.paste(r, (x_offset, y_offset))
             offsets += [(x_offset, y_offset)]
             y_offset += get_h(r) + cut_sep
-        x_offset += get_w(max(col, key = lambda r: get_w(r))) +  cut_sep*(ix+1)
+        x_offset += get_w(max(col, key = lambda r: get_w(r))) +  cut_sep
         y_offset = 0
+    print(offsets)
+    if ret_offset:
+        return canvas, offsets
+    else:
+        return canvas
+
+def _plot_invalid_cells(df, check_ix = range(99)):
+    "creates image of all invalid cells, with pytesseracts guess next to it"
+    inv_ix = _invalid_iloc(df, check_ix = check_ix)
+    bad_cells = []
+    prev_fname = ''
+    for rix, cix in inv_ix:
+        fname = df.iloc[rix]['Filename']
+        if fname != prev_fname:
+            im = Image.open(fname)
+            new_im = cut_subheaders(im)   
+            full_row_bnds = get_row_boundries(new_im, header_bnd_box)
+            prev_fname = fname
+        col_bnd = header_bnd_box[cix]
+        row_bnd = full_row_bnds[df.index[rix]]
+        cell_bnds = (col_bnd[0],
+                            row_bnd[1],
+                            col_bnd[2],
+                            row_bnd[3])
+        bad_cells += [new_im.crop(cell_bnds)]
     
+    canvas, offsets = _plot_img_concat(bad_cells, ret_offset = True)
     d = ImageDraw.Draw(canvas)
     for (rix, cix), (x_offset, y_offset) in zip(inv_ix, offsets):
         d.text((x_offset + 19, y_offset + 10),
@@ -689,23 +774,47 @@ def _plot_invalid_cells(df):
                fill=0,#black
                )
     canvas.show()
-        
-_plot_invalid_cells(ocr_df)    
+    return bad_cells, inv_ix, canvas
+
+# bad_cells, inv_ix, canvas = _plot_invalid_cells(ocr_df, 
+#                                                 heck_ix = range(len(ocr_df)))    
+# canvas.save("pytesseract_cell_errors")
+
 #%%
-def _cast_ocr(s):
-    if not isinstance(s, str):
+col2n_decimal ={'Strikes': 2,#{n:2 if ix <5 else 0 if ix < 7 else 4 for ix,n in enumerate(col_names)}
+         'Symbol': 2,
+         'Bid': 2,
+         'Midpoint': 2,
+         'Ask': 2,
+         'Volume': 0,
+         'Open Int': 0,
+         'Delta': 4,
+         'Vega': 4,
+         'IV Ask': 4,
+         'IV Bid': 4,
+         'Rho': 4,
+         'Theta': 4,
+         'IV': 4,
+         'Gamma': 4}
+
+def _cast_ocr(s, col_name):#grib
+    if not isinstance(s, str) or col_name in ('Observed Time', 'Filename'):
         return s
-    elif s == '\x0c':#unchecked assumtion
+    #No always true, when checked gave 
+    elif s == '\x0c':
+        print(f"Guessed on {s1}")
         return 0
     else:
         s1 = s
         s = s.replace("\n\x0c", "")
-        if s == '' or s[-1] == ".":
-            print(f"Guessed on {s1}")
-            return 0
-        elif s[-1] == ".":
-            s = s[:-1]
-        return s.strip(' ')
+        try:
+            return re.findall(col2re[col_name], s)[0]
+        except:
+            col_re = col2re[col_name].replace(".", "")
+            if len(re.findall(col_re, s)) > 0 and col_name !+ 'Symbol':
+                return 
+            print(f"fugayed on {s1}")
+            return 0            
 
 def _proc_ocr_col(c):
     pass        
@@ -1179,21 +1288,7 @@ def proc_single_digits(vals):
     pd DataFrame
     """
     pass
-n_decimal ={'Strikes': 2,#{n:2 if ix <5 else 0 if ix < 7 else 4 for ix,n in enumerate(col_names)}
-         'Symbol': 2,
-         'Bid': 2,
-         'Midpoint': 2,
-         'Ask': 2,
-         'Volume': 0,
-         'Open Int': 0,
-         'Delta': 4,
-         'Vega': 4,
-         'IV Ask': 4,
-         'IV Bid': 4,
-         'Rho': 4,
-         'Theta': 4,
-         'IV': 4,
-         'Gamma': 4}
+
 my_config = '--psm 10 digits tessedit_char_whitelist=0123456789' #10 single char
 def _proc_ocr(d, outtype):
     "np.array to single digit cast"
@@ -1211,11 +1306,11 @@ out = []
 for name, col_l in vals.items():
     row_vals = []
     for row_l in col_l:
-        outtype = int if n_decimal[name] == 0 else float
+        outtype = int if col2n_decimal[name] == 0 else float
         cell_vals = [_proc_ocr(d, outtype) for d in row_l]
         row_val = outtype("".join(cell_vals))
         
-        row_val /= 10**n_decimal[name]
+        row_val /= 10**col2n_decimal[name]
         is_put = False#GRIB!!
         if name == 'Theta':
             row_val *= -1
