@@ -47,6 +47,8 @@ import collections
 from itertools import groupby
 import pathlib
 
+import help_fn as hf
+
 #crop box order: (left top right bottom)
 LR_OFFSET = 12#amount to cut from sides of screen
 FSW, FSH = pygu.screenshot().size#full screen 
@@ -169,6 +171,23 @@ def is_at_bottom(rows_open = False):
                                                 # region=(1900, 0, 1080, 20)
                                                ))) > 0   
 
+def _press_page_down():
+    """presses page down keys, needs to adjust since some keys presses too fast 
+    for app to catch, as seen by existance of duplicate screenshots"""
+    time.sleep(3 + 3*random.random())
+    #don't think SSE checks for automated behavior; but just in case
+    # if reps < 4:
+    #     pass
+    #     # time.sleep(2 + 3*random.random())
+    # else:
+    #     pass
+        # break
+        # time.sleep(5 + 30*random.random())
+    if is_at_bottom():
+        break
+    pygu.keyDown("pgdn"); time.sleep(0.2 + random.random()/10); pygu.keyUp("pgdn");
+ 
+
 def take_all_screenshots(is_cropped = False):
     """iterates through SSE once and screenshots non-headers
             saving to .\data_pics
@@ -191,7 +210,7 @@ def take_all_screenshots(is_cropped = False):
     if cnt > 0:
         print(f"Screen shots start at {cnt}")
     reps = 0
-    while not is_at_bottom():
+    while True:
         im = pygu.screenshot()
         if is_cropped:
             if reps == 0:
@@ -203,17 +222,7 @@ def take_all_screenshots(is_cropped = False):
 
         cnt += 1
         reps += 1
-        time.sleep(3 + 3*random.random())
-        #don't think SSE checks for automated behavior; but just in case
-        # if reps < 4:
-        #     pass
-        #     # time.sleep(2 + 3*random.random())
-        # else:
-        #     pass
-            # break
-            # time.sleep(5 + 30*random.random())
-        pygu.keyDown("pgdn"); time.sleep(0.1 + random.random()/10); pygu.keyUp("pgdn");
-    
+    _press_page_down()
     os.remove(f"data_pics\\template_del.png")
     print(f"Screen shots end at {cnt-1}")
     print(f"Total Time: {(time.time()-t)//60:.0f}' {(time.time()-t)%60:.0f} sec")    
@@ -226,7 +235,7 @@ def _expand_strikes():
     """
     pygu.moveTo(x=1897,y=998)
     pygu.click()
-    while not is_at_bottom(rows_open=True):
+    while True:
         call_dropdown = list(pygu.locateAllOnScreen("calls_expiry_right_arrow.png",
                                                     confidence=0.990))
         put_dropdown = list(pygu.locateAllOnScreen("puts_expiry_right_arrow.png",
@@ -254,34 +263,110 @@ def _expand_strikes():
                     break
                 else:
                     time.sleep(1)
-        pygu.keyDown("pgdn"); time.sleep(0.1 + random.random()/10); pygu.keyUp("pgdn");
+        if is_at_bottom(rows_open=True):
+            break
+        _press_page_down()
 
-def _remove_duplicates():
+#have dups 10 images apart? when got to img88 somehow slid back to img78
+#may have been errant click? check in future, why have to use all2all
+def _rename():
+    "preserving img order; makes imgxx.png continous. [1,4,5] -> [0,1,2] same order"
+    prev_names = sorted(os.listdir("data_pics"), key = lambda s: int(s[3:-4]))
+    cnt = 0
+    for p in prev_names:
+        os.rename(f"data_pics\\{p}", f"data_pics\\img{cnt}.png")    
+        cnt += 1
+
+def _remove_duplicates_stack(rename = False):
     """filter by eg. GME 03/19/2023 950 C
+    removes only in stack order, top to immeditatly below
+    eg. 99 vs 98 and if 99 == 98 then 99 vs 97; 99!= 98 then 98 vs. 97  
      NOTE: THis would remove values for the same contract collected at different times
+    rename: should rename values so img numbers consecutive
     """
     cnt = int(max(os.listdir(f"{github_dir}\Market_Gamma_(GME)\data_pics"),
-                  key = lambda i: i[3:-4]
+                  key = lambda i: int(i[3:-4])
                   )[3:-4])
     #for just contract details ('GME 03/19/2023 950 C') on full screen im
-    id_crop = lambda im: im.crop((158, 489, 360, 980)) 
-    last = id_crop(
-            Image.open(f"{github_dir}\Market_Gamma_(GME)\data_pics\img{cnt}.png"))
+    im = Image.open(f"data_pics\img{cnt}.png")
+    is_cropped = im.size < (FSW, FSH)
+    if is_cropped:
+        header_crop_only = get_header_bnd_bx(im=im)
+        header = im.convert('L').crop(header_crop_only)
+        header_bnd_box = get_col_boundry(header)
+        l, _, r, _ = header_bnd_box[1] #symbol
+        h =  im.size[1]
+        id_crop = lambda img: img.crop((l, 0, r, h)) 
+    else:
+        id_crop = lambda img: img.crop((158, 489, 360, 980)) 
+    last = id_crop(im)
     cnt -= 1
-    n_fails = 0
-    while True:
+    n_removed = 0
+    while cnt >= 0:
         duplicate = id_crop(
-                        Image.open(f"{github_dir}\Market_Gamma_(GME)\data_pics\img{cnt}.png"))
-        # if not np.any(ImageChops.subtract(last, duplicate)):
+                        Image.open(f"data_pics\\img{cnt}.png"))
+        print(ImageChops.difference(last, duplicate).getbbox(), cnt)
         if ImageChops.difference(last, duplicate).getbbox() is None:
+            _concat_img([last, duplicate], how='h').show()
             print(f"Removing {cnt}")
-            os.remove(f"data_pics\img{cnt}.png")
+            os.remove(f"data_pics\\img{cnt}.png")
+            n_removed += 1
         else:
-            print("the image ", cnt, "differs")
-            if n_fails > 2:
-                break
-            n_fails += 1
+            last = duplicate
         cnt -= 1
+        
+    if rename and n_removed > 0:
+       _rename()
+            
+def _remove_dups_all2all(rename = False):
+    "compares ALL images to all images, returns duplicates"
+    dup_files = set()
+    dup_ims = []
+    for f1 in os.listdir("data_pics"):
+        for f2 in os.listdir("data_pics"):
+            if f1 <= f2:
+                continue
+            im1 = Image.open(f"data_pics\\{f1}")
+            im2 = Image.open(f"data_pics\\{f2}")
+            if im1 == im2:
+                print(f1, f2)
+                dup_files.add((f1,f2))
+                dup_ims += [(im1,im2)]
+                
+    remove_f = set([j for i,j in dup_files])
+    for f1 in remove_f:
+        os.remove(f"data_pics\\{f1}")
+    #rename so no gaps
+    if rename and n_removed > 0:
+        prev_names = sorted(os.listdir("data_pics"), key = lambda s: int(s[3:-4]))
+        cnt = 0
+        for p in prev_names:
+            os.rename(f"data_pics\\{p}", f"data_pics\\img{cnt}.png")    
+            cnt += 1
+ 
+    _rename()
+    return dup_files, dup_ims
+
+# _remove_duplicates_stack(rename = False)
+# _remove_dups_all2all()
+
+s = """img112.png img111.png
+img88.png img78.png
+img89.png img79.png
+img90.png img80.png
+img91.png img81.png
+img92.png img82.png
+img93.png img83.png
+img94.png img84.png
+img95.png img85.png
+img96.png img85.png
+img96.png img95.png
+img97.png img86.png
+img98.png img87.png"""
+for ln in s.split("\n"):
+    f1,f2 = ln.split(" ")
+    os.remove(f"data_pics\\{f1}")
+    _rename()
 #%%
 #17 indexes
 def get_col_boundry(header, plot_check=False, remove_variable_existance_cols = True):
@@ -411,56 +496,6 @@ def cut_subheaders(im, confidence=0.95):
     #bottom 20 pixels are part of next row in this specific screenshot format
     return new_im
 
-#%%
-#have issue of empty cells!?!?
-def _check_row_cropping(bad_cells, inv_ix):
-    """result of _plot_invalid_cells
-    checks confidence to cut_subheaders and 
-    get_row_boundries
-    """
-    #prev crop
-    bad_crop = [b for ix,b in enumerate(bad_cells) 
-                if b.size[1] not in VALID_ROW_HTS]
-    _plot_imgs_concat(bad_crop).show()
-    
-    #bad row croppping
-    bad_files = list(set([ocr_df.iloc[inv_ix[ix][0], 
-                                      ocr_df.columns.get_loc("Filename")]
-                          for ix in bad_crop]))
-    bad_im_num = [int(re.findall("(\d+)", str(i))[0]) for i in bad_files]
-    _check_preprocessing(im_num = bad_im_num, bad_only=True)
-    
-    #bad cut_subheader, check new confidence
-    bad_crop_ix = [ix for ix,b in enumerate(bad_cells) 
-                   if b.size[1] not in VALID_ROW_HTS]
-    
-    crop_inv_ix = [inv_ix[ix] for ix in bad_crop_ix]
-    for confidence in (0.97, 0.95, 0.93, 0.9):
-        nbad_cells = []
-        prev_fname = ''
-        ims = []
-        for rix, cix in crop_inv_ix:
-            fname = df.iloc[rix]['Filename']
-            if fname != prev_fname:
-                im = Image.open(fname)
-                new_im = cut_subheaders(im, confidence = confidence)   
-                ims += [new_im]
-                full_row_bnds = get_row_boundries(new_im, header_bnd_box)
-                prev_fname = fname
-            col_bnd = header_bnd_box[cix]
-            row_bnd = full_row_bnds[df.index[rix]]
-            cell_bnds = (col_bnd[0],
-                                row_bnd[1],
-                                col_bnd[2],
-                                row_bnd[3])
-            # if  row_bnd[3] - row_bnd[1] > 16:
-            nbad_cells += [new_im.crop(cell_bnds)]
-            print(row_bnd, row_bnd[3] - row_bnd[1])
-            #title doesn't work on windows?!?
-        _plot_imgs_concat(nbad_cells).show(title=f"Bad Crops with cut_subheaders(confidence={confidence})")
-        break
-
-#%%
 def get_row_boundries(new_im, header_bnd_box):
     """
     crop_im: pil image column data 
@@ -479,14 +514,15 @@ def get_row_boundries(new_im, header_bnd_box):
     _, th_l = cv2.threshold(cv_im, 120, 255, cv2.THRESH_BINARY)
     #erode, dilate have backwards effects, since will invert colors. erode makes more black->more white
     _, im_w = th_l.shape 
-    kernel_hor = np.ones((5, im_w*3//4), dtype=np.uint8)#each row is ~26 pixels tall
-    erode = cv2.erode(th_l, kernel_hor)#black squares where each number is
+    kernel_hor = np.ones((5, im_w//4), dtype=np.uint8)#each row is ~26 pixels tall
+    erode = cv2.erode(th_l, kernel_hor)#black squares where each number is    
     
-    kernel_ones = np.ones((min(VALID_ROW_HTS)//2, 2), dtype=np.uint8)
-    blocks = cv2.dilate(erode, kernel_ones)
-    # pdb.set_trace()
+    # #remove excess curve in front, (from negative sign?)
+    # kernel_ones = np.ones((3, min(VALID_ROW_HTS)//2), dtype=np.uint8)
+    # blocks = cv2.dilate(erode, kernel_ones)
+    blocks = erode
     
-    h_sum = np.sum(blocks, axis=1)
+    h_sum = np.sum(blocks[:, -im_w//4:], axis=1)
     empty_row_ix = np.where(h_sum != 0)[0]
     row_breakpoints = [0]
     segment = []
@@ -509,7 +545,6 @@ def get_row_boundries(new_im, header_bnd_box):
     if len(bad_rows) > 0:
         print(f"WARNING!! removing {bad_rows} boundries")
 
-    pdb.set_trace()        
     return [i for i in out if i[3]-i[1] in VALID_ROW_HTS]
     
     #looking for white holes in black background, so colors inverted
@@ -525,8 +560,112 @@ def get_row_boundries(new_im, header_bnd_box):
                              
     return [contour2box(c) for c in contours]
 
-_check_preprocessing(im_num = (55,111,112, 1), bad_only=False)
+# im = Image.open("data_pics\img108.png")
+# header_crop_only = get_header_bnd_bx(im=im)
+# header = im.convert('L').crop(header_crop_only)
+# header_bnd_box = get_col_boundry(header)
+# col_names = get_col_names(header, header_bnd_box)
+# new_im = cut_subheaders(im)
+# full_row_bnds = get_row_boundries(new_im, header_bnd_box)
 #%%
+def ocr_all_files():        
+    t = time.time()
+    dfs = []
+    l_times = []
+    for ix, pth in enumerate(os.listdir("data_pics")):
+        loop_t = time.time()
+        fname = pathlib.Path(f"data_pics\\{pth}")
+        im = Image.open(fname)
+        if ix == 0:
+            header_crop_only = get_header_bnd_bx(im=im)
+            header = im.convert('L').crop(header_crop_only)
+            header_bnd_box = get_col_boundry(header)
+            col_names = get_col_names(header, header_bnd_box)
+            #try psm 7(1 line) or 8 (1 word)? #no sig improvement where psm 6 fail
+            #char_whitelist doesn't work on Tesseract v4.0
+            symbol_config =  '--psm 6'
+            numeric_config = '--psm 6 digits tessedit_char_whitelist=-0123456789.,'
+            #if is data in a 'Symbol' colum
+            get_config = lambda b: symbol_config \
+                                if b[0] == header_bnd_box[1][0] \
+                                else numeric_config                            
+    
+        new_im = cut_subheaders(im)   
+        full_row_bnds = get_row_boundries(new_im, header_bnd_box)
+        cell_bnds = {col_name: [(col_bnd[0],
+                                row_bnd[1],
+                                col_bnd[2],
+                                row_bnd[3])
+                                for row_bnd in full_row_bnds]
+                     for col_bnd, col_name in zip(header_bnd_box,
+                                                  col_names)}
+        
+        #pytesseract casts to RGB anyway, and thresholding worsens results
+        df = pd.DataFrame({col_name:[pytesseract.image_to_string(new_im.crop(b),
+                                                                 config = get_config(b))
+                                for b in col_crop]
+                          for col_name, col_crop in cell_bnds.items()
+                          })
+        
+        #Note: bias in using time saved file, not time displayed file
+        df['Filename'] = fname #used4 debugging 
+        df['Observed Time'] = datetime.fromtimestamp(fname.stat().st_ctime)
+        dfs += [df]
+        l_times += [time.time() - loop_t]
+        print(f"Loop Time: {(time.time() - loop_t)//60:.0f}' {(time.time() - loop_t)%60:.0f} sec")    
+        # if ix > 4:
+        #     break                                               
+    duration = time.time()-t
+    print(f"Total Time:{duration//3600:.0f}h  {(duration%3600)//60:.0f}' {(duration)%60:.0f}\"")
+    print(f"{np.mean(l_times):.0f}\" per ocr im, SD {np.std(l_times):.2f}\" vs. <4\" per screenshot")
+    # Total Time:2h  14' 9"
+    # 71" per ocr im, SD 3.75" vs. <4" per screenshot
+    
+    with open("ocrd_dfs", 'wb') as f:
+        pickle.dump(dfs, f)
+        
+    ocr_df = pd.concat(dfs)
+    return ocr_df
+
+ocr_df = ocr_all_files()
+#GRIB remove duplicates
+#%%
+bad_symbol = ocr_df[ocr_df['Symbol'].apply(lambda i: len(re.findall(col2re['Symbol'],i)) ==0)]
+bad_symbol_cells = []
+for fname,ix in zip(bad_symbol['Filename'], bad_symbol.index):
+        im = Image.open(fname)
+        new_im = cut_subheaders(im)   
+        full_row_bnds = get_row_boundries(new_im, header_bnd_box)
+        # col_bnd = header_bnd_box[cix]
+        row_bnd = full_row_bnds[df.index[ix]]
+        # cell_bnds = (col_bnd[0],
+        #              row_bnd[1],
+        #              col_bnd[2],
+        #              row_bnd[3])
+        bad_symbol_cells += [new_im.crop(row_bnd)]
+_plot_imgs_concat(bad_symbol_cells).show()
+#%%
+col2re = {'Strikes':'\d+\.\d{2}',
+           #.50 C and 7.50 both valid entries
+          'Symbol': '[A-Z]+ \d{2}/\d{2}/\d{4} \d*\.\d{2} *[CPcp¢]',
+          'Bid': '\d+\.\d{2}',
+          'Midpoint': '\d+\.\d{2}',
+          'Ask': '\d+\.\d{2}',
+          'Volume': '\d+',
+          'Open Int':'\d+',
+          'Delta': '-{0,1}[01]\.\d{4}',
+          'Vega': '\d\.\d{4}',
+          'IV Ask': '\d+\.\d{4}',
+          'IV Bid': '\d+\.\d{4}',
+          'Rho': '\d\.\d{4}',
+          'Theta': '-{0,1}\d\.\d{4}',
+          'IV': '\d+\.\d{4}',
+          'Gamma': '0.\d{4}',
+          #know below are right, non-ocr
+          'Observed Time': '.+', 
+          'Filename': '.+',
+          }
+
 def _check_boundries(im, bnds, cut_sep = 20):
     """
     for box in bns that segment of im will be placed in new image with
@@ -560,10 +699,10 @@ def _check_boundries(im, bnds, cut_sep = 20):
         x_offset = 0
     new_im.show()
 
-def _check_preprocessing(im_num = (9, 37, 51, 89, 90, 91, 111), bad_only=False):
+def _check_preprocessing(im_num = (9, 37, 51, 57, 89, 90, 91, 111), bad_only=False):
     """for images with file numbered in iterable in_num, will plot the cell croppings
     for visual inspection
-    bad_only: those bounds which have non-standard height outside [22-28]
+    bad_only: those bounds which have non-standard height, outside VALID_ROW_HTS
     """
     for ix, i in enumerate(im_num):
         im = Image.open(f"data_pics\img{i}.png")
@@ -585,97 +724,8 @@ def _check_preprocessing(im_num = (9, 37, 51, 89, 90, 91, 111), bad_only=False):
             if len(cell_bnds) == 0:#all good
                 print(f"No errors for {i}")
                 continue
-        _check_boundries(new_im, cell_bnds)    
-     
-# im = Image.open("data_pics\img108.png")
-# header_crop_only = get_header_bnd_bx(im=im)
-# header = im.convert('L').crop(header_crop_only)
-# header_bnd_box = get_col_boundry(header)
-# col_names = get_col_names(header, header_bnd_box)
-# new_im = cut_subheaders(im)
-# full_row_bnds = get_row_boundries(new_im, header_bnd_box)
+        _check_boundries(new_im, cell_bnds)      
 
-# _check_preprocessing(im_num = (2,3,4))
-#%%
-# def proc_all_img():        
-t = time.time()
-dfs = []
-l_times = []
-for ix, pth in enumerate(os.listdir("data_pics")):
-    loop_t = time.time()
-    fname = pathlib.Path(f"data_pics\\{pth}")
-    im = Image.open(fname)
-    if ix == 0:
-        header_crop_only = get_header_bnd_bx(im=im)
-        header = im.convert('L').crop(header_crop_only)
-        header_bnd_box = get_col_boundry(header)
-        col_names = get_col_names(header, header_bnd_box)
-        #try psm 7(1 line) or 8 (1 word)? #no sig improvement where psm 6 fail
-        #char_whitelist doesn't work on Tesseract v4.0
-        symbol_config =  '--psm 6'
-        numeric_config = '--psm 6 digits tessedit_char_whitelist=-0123456789.,'
-        #if is data in a 'Symbol' colum
-        get_config = lambda b: symbol_config \
-                            if b[0] == header_bnd_box[1][0] \
-                            else numeric_config                            
-
-    new_im = cut_subheaders(im)   
-    full_row_bnds = get_row_boundries(new_im, header_bnd_box)
-    cell_bnds = {col_name: [(col_bnd[0],
-                            row_bnd[1],
-                            col_bnd[2],
-                            row_bnd[3])
-                            for row_bnd in full_row_bnds]
-                 for col_bnd, col_name in zip(header_bnd_box,
-                                              col_names)}
-    
-    #pytesseract casts to RGB anyway, and thresholding worsens results
-    df = pd.DataFrame({col_name:[pytesseract.image_to_string(new_im.crop(b),
-                                                             config = get_config(b))
-                            for b in col_crop]
-                      for col_name, col_crop in cell_bnds.items()
-                      })
-    
-    #Note: bias in using time saved file, not time displayed file
-    df['Filename'] = fname #used4 debugging 
-    df['Observed Time'] = datetime.fromtimestamp(fname.stat().st_ctime)
-    dfs += [df]
-    l_times += [time.time() - loop_t]
-    print(f"Loop Time: {(time.time() - loop_t)//60:.0f}' {(time.time() - loop_t)%60:.0f} sec")    
-    # if ix > 4:
-    #     break                                               
-duration = time.time()-t
-print(f"Total Time:{duration//3600:.0f}h  {(duration%3600)//60:.0f}' {(duration)%60:.0f}\"")
-print(f"{np.mean(l_times):.0f}\" per ocr im, SD {np.std(l_times):.2f}\" vs. <4\" per screenshot")
-# Total Time:2h  14' 9"
-# 71" per ocr im, SD 3.75" vs. <4" per screenshot
-
-with open("ocrd_dfs", 'wb') as f:
-    pickle.dump(dfs, f)
-    
-ocr_df = pd.concat(dfs)
-#%%
-col2re = {'Strikes':'\d+\.\d{2}',
-           #.50 C and 7.50 both valid entries
-          'Symbol': '[A-Z]+ \d{2}/\d{2}/\d{4} \d*\.\d{2} [CPcp¢]',
-          'Bid': '\d+\.\d{2}',
-          'Midpoint': '\d+\.\d{2}',
-          'Ask': '\d+\.\d{2}',
-          'Volume': '\d+',
-          'Open Int':'\d+',
-          'Delta': '-{0,1}[01]\.\d{4}',
-          'Vega': '\d\.\d{4}',
-          'IV Ask': '\d+\.\d{4}',
-          'IV Bid': '\d+\.\d{4}',
-          'Rho': '\d\.\d{4}',
-          'Theta': '-{0,1}\d\.\d{4}',
-          'IV': '\d+\.\d{4}',
-          'Gamma': '0.\d{4}',
-          #know below are right, non-ocr
-          'Observed Time': '.+', 
-          'Filename': '.+',
-          }
-    
 def _num_invalid_ocr(df):
     "total number of entries across all cells that don't match regex"
     check_ix = range(len(df))
@@ -717,7 +767,8 @@ def _plot_imgs_concat(bad_cells, mx_h = 20, cut_sep = 20, ret_offset = False):
     get_w = lambda i:  i.size[0]# - i.size[0]
     get_h = lambda i:  i.size[1]# - i.size[1]
     bad_cells = [bad_cells[ix*mx_h:(ix+1)*mx_h]
-                for ix in range(len(bad_cells)//mx_h + 1)]
+                for ix in range(len(bad_cells)//mx_h 
+                                + (len(bad_cells) % mx_h > 0))]
     
     #max height in each column, since that used for offset when writing to im
     h_sz = max(
@@ -740,12 +791,12 @@ def _plot_imgs_concat(bad_cells, mx_h = 20, cut_sep = 20, ret_offset = False):
             y_offset += get_h(r) + cut_sep
         x_offset += get_w(max(col, key = lambda r: get_w(r))) +  cut_sep
         y_offset = 0
-    print(offsets)
     if ret_offset:
         return canvas, offsets
     else:
         return canvas
-
+    
+#grib writes to wrong spot, tesseract isn't matched to cell. Can tell since "GME" isn't on a strike cell
 def _plot_invalid_cells(df, check_ix = range(99)):
     "creates image of all invalid cells, with pytesseracts guess next to it"
     inv_ix = _invalid_iloc(df, check_ix = check_ix)
@@ -758,15 +809,19 @@ def _plot_invalid_cells(df, check_ix = range(99)):
             new_im = cut_subheaders(im)   
             full_row_bnds = get_row_boundries(new_im, header_bnd_box)
             prev_fname = fname
-        col_bnd = header_bnd_box[cix]
-        row_bnd = full_row_bnds[df.index[rix]]
+        try:
+            col_bnd = header_bnd_box[cix]
+            row_bnd = full_row_bnds[df.index[rix]]
+        except:
+            print("skipping", rix, cix)#fixed bad_cells but haven't rerun yet
+            continue
         cell_bnds = (col_bnd[0],
-                            row_bnd[1],
-                            col_bnd[2],
-                            row_bnd[3])
+                     row_bnd[1],
+                     col_bnd[2],
+                     row_bnd[3])
         bad_cells += [new_im.crop(cell_bnds)]
     
-    canvas, offsets = _plot_img_concat(bad_cells, ret_offset = True)
+    canvas, offsets = _plot_imgs_concat(bad_cells, ret_offset = True)
     d = ImageDraw.Draw(canvas)
     for (rix, cix), (x_offset, y_offset) in zip(inv_ix, offsets):
         d.text((x_offset + 19, y_offset + 10),
@@ -776,10 +831,126 @@ def _plot_invalid_cells(df, check_ix = range(99)):
     canvas.show()
     return bad_cells, inv_ix, canvas
 
-# bad_cells, inv_ix, canvas = _plot_invalid_cells(ocr_df, 
-#                                                 heck_ix = range(len(ocr_df)))    
-# canvas.save("pytesseract_cell_errors")
+def _check_ix_align(n_cells = 100):
+    "Check _plot_imgs_concat mapping imgs to offsets"
+    # blank_cells = [b for b in bad_cells
+    #                       if np.array(b).min() > 170]#and (np.array(b)==0).sum() ==0]
+    blank_cells = [Image.fromarray(np.ones((25,100))*255) 
+                   for _ in range(n_cells)]
+    for ix,b in enumerate(blank_cells):
+        ImageDraw.Draw(b).text((10,10), str(ix), fill=0)
+    canvas, offsets = _plot_imgs_concat(blank_cells, ret_offset = True)
+    d = ImageDraw.Draw(canvas)
+    i = 0
+    for (x_offset, y_offset) in offsets:
+        d.text((x_offset + 59, y_offset + 10),
+               repr(i),
+               fill=0,#black
+               )
+        i +=1
+    canvas.show()
+    return offsets
+    
+#%%
+def _check_row_cropping(bad_cells, inv_ix, check_cut_subheaders=False):
+    """result of _plot_invalid_cells
+    checks confidence to cut_subheaders and 
+    get_row_boundries
+    """
+    #prev crop
+    bad_crop = [b for ix,b in enumerate(bad_cells) 
+                if b.size[1] not in VALID_ROW_HTS]
+    _plot_imgs_concat(bad_crop).show()
+    
+    #bad row croppping
+    bad_crop_ix = [ix for ix,b in enumerate(bad_cells) 
+                   if b.size[1] not in VALID_ROW_HTS]
+    bad_files = list(set([ocr_df.iloc[inv_ix[ix][0], 
+                                      ocr_df.columns.get_loc("Filename")]
+                          for ix in bad_crop_ix]))
+    bad_im_num = [int(re.findall("(\d+)", str(i))[0]) for i in bad_files]
+    _check_preprocessing(im_num = bad_im_num, bad_only=True)
+    
+    #bad cut_subheader, check new confidence
+    if not check_cut_subheaders:
+        return
+    crop_inv_ix = [inv_ix[ix] for ix in bad_crop_ix]
+    for confidence in (0.97, 0.95, 0.93, 0.9):
+        nbad_cells = []
+        prev_fname = ''
+        ims = []
+        for rix, cix in crop_inv_ix:
+            fname = df.iloc[rix]['Filename']
+            if fname != prev_fname:
+                im = Image.open(fname)
+                new_im = cut_subheaders(im, confidence = confidence)   
+                ims += [new_im]
+                full_row_bnds = get_row_boundries(new_im, header_bnd_box)
+                prev_fname = fname
+            col_bnd = header_bnd_box[cix]
+            row_bnd = full_row_bnds[df.index[rix]]
+            cell_bnds = (col_bnd[0],
+                                row_bnd[1],
+                                col_bnd[2],
+                                row_bnd[3])
+            # if  row_bnd[3] - row_bnd[1] > 16:
+            nbad_cells += [new_im.crop(cell_bnds)]
+            print(row_bnd, row_bnd[3] - row_bnd[1])
+            #title doesn't work on windows?!?
+        _plot_imgs_concat(nbad_cells).show(title=f"Bad Crops with cut_subheaders(confidence={confidence})")
+        break
+    
+bad_cells, inv_ix, canvas = _plot_invalid_cells(ocr_df, 
+                                                check_ix = range(len(ocr_df)))    
+canvas.save("pytesseract_cell_errors.png")
+# _check_row_cropping(bad_cells, inv_ix)
+#%%
+#have issue of empty cells, because aren't written if no existing bid-ask prx
+blank_cell = [b for ix, b in enumerate(bad_cells) if ix%20 == 17 and ix > 20][-5]
+blank_ix = [b for ix, b in enumerate(inv_ix) if ix%20 == 17 and ix > 20][-5]
 
+fname = ocr_df.iloc[blank_ix[0], ocr_df.columns.get_loc("Filename")]
+im = Image.open(fname)
+im.show()
+#%%
+_plot_imgs_concat([b for ix, b in enumerate(bad_cells) if ix%20 == 3 and ix > 20]).show()
+#%%
+blank_cell = [b for ix, b in enumerate(bad_cells) if ix%20 == 17 and ix > 20][-5]
+blank_ix = [b for ix, b in enumerate(inv_ix) if ix%20 == 17 and ix > 20][-5]
+
+fname = ocr_df.iloc[blank_ix[0], ocr_df.columns.get_loc("Filename")]
+im = Image.open(fname)
+im.show()
+
+#%%
+#deal with some cells being blanks
+blank_cells, blank_ixs = zip(*[(b,ix) for b,ix in zip(bad_cells, inv_ix)
+                          if np.array(b).min() > 170]#and (np.array(b)==0).sum() ==0]
+                             )#includes orange selected cell, if blank
+# _plot_imgs_concat(blank_cells).show()
+blank_cols = [ocr_df.columns[ix[1]] for ix in blank_ixs]
+
+# Image.open(ocr_df.iloc[blank_ixs[0][0], ocr_df.columns.get_loc("Filename")]).show()
+rix, cix = blank_ixs[12]
+im = Image.open(ocr_df.iloc[rix, ocr_df.columns.get_loc("Filename")])
+new_im = cut_subheaders(im)
+full_row_bnds = get_row_boundries(new_im, header_bnd_box)
+col_bnd = header_bnd_box[cix]
+row_bnd = full_row_bnds[df.index[rix]]
+cell_bnds = (col_bnd[0],
+                                row_bnd[1],
+                                col_bnd[2],
+                                row_bnd[3])
+new_im.crop(cell_bnds).show()
+#%%
+cell_bnds = [(col_bnd[0],
+                                row_bnd[1],
+                                col_bnd[2],
+                                row_bnd[3])
+             for col_bnd in header_bnd_box
+                 for row_bnd in full_row_bnds]
+[b for b in cell_bnds 
+ if  np.array(new_im.crop(b)).min() > 170]
 #%%
 col2n_decimal ={'Strikes': 2,#{n:2 if ix <5 else 0 if ix < 7 else 4 for ix,n in enumerate(col_names)}
          'Symbol': 2,
@@ -797,27 +968,33 @@ col2n_decimal ={'Strikes': 2,#{n:2 if ix <5 else 0 if ix < 7 else 4 for ix,n in 
          'IV': 4,
          'Gamma': 4}
 
-def _cast_ocr(s, col_name):#grib
+def cast_ocr_col(s):
+    "takes series of output of pytesseract and processes"
+    col_name = s.name
     if not isinstance(s, str) or col_name in ('Observed Time', 'Filename'):
         return s
-    #No always true, when checked gave 
+    #No always true, multiple non-zero img give this output
     elif s == '\x0c':
         print(f"Guessed on {s1}")
         return 0
     else:
         s1 = s
         s = s.replace("\n\x0c", "")
+        tp = str if col_name == 'Symbol' else \
+             int if col_name in ('Volume', 'Open Int') else \
+             float
         try:
-            return re.findall(col2re[col_name], s)[0]
+            return tp(re.findall(col2re[col_name], s)[0])
         except:
             col_re = col2re[col_name].replace(".", "")
-            if len(re.findall(col_re, s)) > 0 and col_name !+ 'Symbol':
-                return 
-            print(f"fugayed on {s1}")
-            return 0            
-
-def _proc_ocr_col(c):
-    pass        
+            if len(re.findall(col_re, s)) > 0 and col_name != 'Symbol':
+                return tp(re.findall(col_re, s)[0]/10**col2n_decimal[col_name])
+            if col_name == 'Bid':
+                return 0
+            if col_name == 'Ask':
+                return np.infy
+            print(f"guessed on {s1}")
+            return 0                 
     
 def proc_ocr_df(df):
     "converts OCR'd results from screenshot into other columns"
@@ -1387,7 +1564,7 @@ fig.show()
 # print(ax1.get_xticks(), ax2.get_xticks())
 
 #%% improve proc for digits of bad cell img 
-crop_im = new_im.crop(header2clipped(header_bn_box[]))
+crop_im = new_im.crop(header2clipped(header_bound_box[0]))
 cv_im = np.array(crop_im)
 result = cv_im.copy()
     
@@ -1535,7 +1712,7 @@ pytesseract.image_to_string(result)
 if __name__ == "__main__":
     pass
     # take_all_screenshots()
-
+    
 #%%  #helpful asides
 
 _sh = lambda m: Image.fromarray(m).show()
