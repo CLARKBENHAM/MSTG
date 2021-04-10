@@ -173,8 +173,11 @@ def is_at_bottom(rows_open = False):
 
 def _press_page_down():
     """presses page down keys, needs to adjust since some keys presses too fast 
-    for app to catch, as seen by existance of duplicate screenshots"""
-    time.sleep(3 + 3*random.random())
+    for app to catch"""
+    #so far no duplicates from app not reacting fast enough
+    fixed_delay = 1#3
+    mult_rand_delay = 3#3
+    time.sleep(fixed_delay + mult_rand_delay*random.random())
     #don't think SSE checks for automated behavior; but just in case
     # if reps < 4:
     #     pass
@@ -183,10 +186,12 @@ def _press_page_down():
     #     pass
         # break
         # time.sleep(5 + 30*random.random())
-    if is_at_bottom():
-        break
-    pygu.keyDown("pgdn"); time.sleep(0.2 + random.random()/10); pygu.keyUp("pgdn");
- 
+    fixed_hold = 0.1
+    mult_rand_hold = 1/10
+    # pygu.keyDown("pgdn"); time.sleep(fixed_hold + random.random()*mul_rand_hold); pygu.keyUp("pgdn");
+    pygu.keyDown("pgdn")
+    time.sleep(fixed_hold + random.random()*mul_rand_hold)
+    pygu.keyUp("pgdn")
 
 def take_all_screenshots(is_cropped = False):
     """iterates through SSE once and screenshots non-headers
@@ -222,6 +227,8 @@ def take_all_screenshots(is_cropped = False):
 
         cnt += 1
         reps += 1
+    if is_at_bottom():
+        break
     _press_page_down()
     os.remove(f"data_pics\\template_del.png")
     print(f"Screen shots end at {cnt-1}")
@@ -318,7 +325,7 @@ def _remove_duplicates_stack(rename = False):
     if rename and n_removed > 0:
        _rename()
             
-def _remove_dups_all2all(rename = False):
+def _remove_dups_all2all():
     "compares ALL images to all images, returns duplicates"
     dup_files = set()
     dup_ims = []
@@ -350,6 +357,7 @@ def _remove_dups_all2all(rename = False):
 # _remove_duplicates_stack(rename = False)
 # _remove_dups_all2all()
 
+#printout, run when can
 s = """img112.png img111.png
 img88.png img78.png
 img89.png img79.png
