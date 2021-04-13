@@ -47,8 +47,6 @@ import collections
 from itertools import groupby
 import pathlib
 
-import help_fn as hf
-
 #crop box order: (left top right bottom)
 LR_OFFSET = 12#amount to cut from sides of screen
 FSW, FSH = pygu.screenshot().size#full screen 
@@ -227,9 +225,9 @@ def take_all_screenshots(is_cropped = False):
 
         cnt += 1
         reps += 1
-    if is_at_bottom():
-        break
-    _press_page_down()
+        if is_at_bottom():
+            break
+        _press_page_down()
     os.remove(f"data_pics\\template_del.png")
     print(f"Screen shots end at {cnt-1}")
     print(f"Total Time: {(time.time()-t)//60:.0f}' {(time.time()-t)%60:.0f} sec")    
@@ -331,7 +329,7 @@ def _remove_dups_all2all():
     dup_ims = []
     for f1 in os.listdir("data_pics"):
         for f2 in os.listdir("data_pics"):
-            if f1 <= f2:
+            if f1 <= f2:#only remove larger
                 continue
             im1 = Image.open(f"data_pics\\{f1}")
             im2 = Image.open(f"data_pics\\{f2}")
@@ -340,41 +338,14 @@ def _remove_dups_all2all():
                 dup_files.add((f1,f2))
                 dup_ims += [(im1,im2)]
                 
-    remove_f = set([j for i,j in dup_files])
+    remove_f = set([i for i,j in dup_files])
     for f1 in remove_f:
         os.remove(f"data_pics\\{f1}")
-    #rename so no gaps
-    if rename and n_removed > 0:
-        prev_names = sorted(os.listdir("data_pics"), key = lambda s: int(s[3:-4]))
-        cnt = 0
-        for p in prev_names:
-            os.rename(f"data_pics\\{p}", f"data_pics\\img{cnt}.png")    
-            cnt += 1
- 
     _rename()
     return dup_files, dup_ims
 
 # _remove_duplicates_stack(rename = False)
 # _remove_dups_all2all()
-
-#printout, run when can
-s = """img112.png img111.png
-img88.png img78.png
-img89.png img79.png
-img90.png img80.png
-img91.png img81.png
-img92.png img82.png
-img93.png img83.png
-img94.png img84.png
-img95.png img85.png
-img96.png img85.png
-img96.png img95.png
-img97.png img86.png
-img98.png img87.png"""
-for ln in s.split("\n"):
-    f1,f2 = ln.split(" ")
-    os.remove(f"data_pics\\{f1}")
-    _rename()
 #%%
 #17 indexes
 def get_col_boundry(header, plot_check=False, remove_variable_existance_cols = True):
@@ -636,22 +607,6 @@ def ocr_all_files():
     return ocr_df
 
 ocr_df = ocr_all_files()
-#GRIB remove duplicates
-#%%
-bad_symbol = ocr_df[ocr_df['Symbol'].apply(lambda i: len(re.findall(col2re['Symbol'],i)) ==0)]
-bad_symbol_cells = []
-for fname,ix in zip(bad_symbol['Filename'], bad_symbol.index):
-        im = Image.open(fname)
-        new_im = cut_subheaders(im)   
-        full_row_bnds = get_row_boundries(new_im, header_bnd_box)
-        # col_bnd = header_bnd_box[cix]
-        row_bnd = full_row_bnds[df.index[ix]]
-        # cell_bnds = (col_bnd[0],
-        #              row_bnd[1],
-        #              col_bnd[2],
-        #              row_bnd[3])
-        bad_symbol_cells += [new_im.crop(row_bnd)]
-_plot_imgs_concat(bad_symbol_cells).show()
 #%%
 col2re = {'Strikes':'\d+\.\d{2}',
            #.50 C and 7.50 both valid entries
@@ -734,36 +689,42 @@ def _check_preprocessing(im_num = (9, 37, 51, 57, 89, 90, 91, 111), bad_only=Fal
                 continue
         _check_boundries(new_im, cell_bnds)      
 
-def _num_invalid_ocr(df):
+def _num_invalid_ocr(df, check_ix = range(99)):
     "total number of entries across all cells that don't match regex"
-    check_ix = range(len(df))
-    check_ix = range(99)
-    return sum([all(df.iloc[[ix],:].apply(lambda i: len(re.findall(col2re[i.name],
+    # check_ix = range(len(df))
+    return sum([sum(df.iloc[[ix],:].apply(lambda i: len(re.findall(col2re[i.name],
                                                             str(i.values[0]))
-                                                  ) == 1)
-                                    ) for ix in check_ix])
+                                                  ) == 0))
+                for ix in check_ix])
 
 def _invalid_cols(df, check_ix = range(99)):
     """name of columns with entries that don't match regex
         from rows with iloc in check_ix
     """
+    invalid_col = lambda i: i.name if \
+                            len(re.findall(col2re[i.name],
+                                           str(i.values[0]))
+                                ) == 0 \
+                            else ''
     return set([s for ix in check_ix 
-                 for s in df.iloc[[ix],:].apply(lambda i: i.name if 
-                                                          len(re.findall(col2re[i.name],
-                                                                         str(i.values[0]))
-                                                              ) == 0
-                                                          else '')
+                 for s in df.iloc[[ix],:].apply(invalid_col)
                  if s != ''])
 
 def _invalid_iloc(df,  check_ix = range(99)):
-    "iloc ix of entries that don't match regex, given row iloc in check_ix"
-    return [(ix, df.columns.get_loc(s)) for ix in check_ix 
-                 for s in df.iloc[[ix],:].apply(lambda i: i.name if 
-                                                          len(re.findall(col2re[i.name],
-                                                                         str(i.values[0]))
-                                                              ) == 0
-                                                          else '')
+    """iloc ix of entries that don't match regex, given row iloc in check_ix
+        returns from OCR columns
+    """
+    invalid_col = lambda i: i.name if \
+                            len(re.findall(col2re[i.name],
+                                           str(i.values[0]))
+                                ) == 0 \
+                            else ''
+    out = [(ix, df.columns.get_loc(s)) 
+            for ix in check_ix 
+                 for s in df.iloc[[ix],:].apply(invalid_col)
                  if s != '']
+    assert max(out, key = lambda i: i[1])[1] < 15, "Invalid Entry in non-ocr column"
+    return out
 
 def _plot_imgs_concat(bad_cells, mx_h = 20, cut_sep = 20, ret_offset = False):
     """given a list of images, plot them going down in column order
@@ -817,12 +778,9 @@ def _plot_invalid_cells(df, check_ix = range(99)):
             new_im = cut_subheaders(im)   
             full_row_bnds = get_row_boundries(new_im, header_bnd_box)
             prev_fname = fname
-        try:
-            col_bnd = header_bnd_box[cix]
-            row_bnd = full_row_bnds[df.index[rix]]
-        except:
-            print("skipping", rix, cix)#fixed bad_cells but haven't rerun yet
-            continue
+        col_bnd = header_bnd_box[cix]
+        row_bnd = full_row_bnds[df.index[rix]]
+
         cell_bnds = (col_bnd[0],
                      row_bnd[1],
                      col_bnd[2],
@@ -832,7 +790,7 @@ def _plot_invalid_cells(df, check_ix = range(99)):
     canvas, offsets = _plot_imgs_concat(bad_cells, ret_offset = True)
     d = ImageDraw.Draw(canvas)
     for (rix, cix), (x_offset, y_offset) in zip(inv_ix, offsets):
-        d.text((x_offset + 19, y_offset + 10),
+        d.text((x_offset + 20, y_offset + 10),
                repr(df.iloc[rix, cix]),
                fill=0,#black
                )
@@ -841,8 +799,6 @@ def _plot_invalid_cells(df, check_ix = range(99)):
 
 def _check_ix_align(n_cells = 100):
     "Check _plot_imgs_concat mapping imgs to offsets"
-    # blank_cells = [b for b in bad_cells
-    #                       if np.array(b).min() > 170]#and (np.array(b)==0).sum() ==0]
     blank_cells = [Image.fromarray(np.ones((25,100))*255) 
                    for _ in range(n_cells)]
     for ix,b in enumerate(blank_cells):
@@ -859,7 +815,6 @@ def _check_ix_align(n_cells = 100):
     canvas.show()
     return offsets
     
-#%%
 def _check_row_cropping(bad_cells, inv_ix, check_cut_subheaders=False):
     """result of _plot_invalid_cells
     checks confidence to cut_subheaders and 
@@ -911,54 +866,70 @@ def _check_row_cropping(bad_cells, inv_ix, check_cut_subheaders=False):
 bad_cells, inv_ix, canvas = _plot_invalid_cells(ocr_df, 
                                                 check_ix = range(len(ocr_df)))    
 canvas.save("pytesseract_cell_errors.png")
-# _check_row_cropping(bad_cells, inv_ix)
-#%%
-#have issue of empty cells, because aren't written if no existing bid-ask prx
-blank_cell = [b for ix, b in enumerate(bad_cells) if ix%20 == 17 and ix > 20][-5]
-blank_ix = [b for ix, b in enumerate(inv_ix) if ix%20 == 17 and ix > 20][-5]
+# _check_row_cropping(bad_cells, inv_ix)#likely fixed
+# #%%
+# #have issue of empty cells, because aren't written if no existing bid-ask prx
+# blank_cell = [b for ix, b in enumerate(bad_cells) if ix%20 == 17 and ix > 20][-5]
+# blank_ix = [b for ix, b in enumerate(inv_ix) if ix%20 == 17 and ix > 20][-5]
 
-fname = ocr_df.iloc[blank_ix[0], ocr_df.columns.get_loc("Filename")]
-im = Image.open(fname)
-im.show()
-#%%
-_plot_imgs_concat([b for ix, b in enumerate(bad_cells) if ix%20 == 3 and ix > 20]).show()
-#%%
-blank_cell = [b for ix, b in enumerate(bad_cells) if ix%20 == 17 and ix > 20][-5]
-blank_ix = [b for ix, b in enumerate(inv_ix) if ix%20 == 17 and ix > 20][-5]
+# fname = ocr_df.iloc[blank_ix[0], ocr_df.columns.get_loc("Filename")]
+# im = Image.open(fname)
+# im.show()
+# #%%
+# _plot_imgs_concat([b for ix, b in enumerate(bad_cells) if ix%20 == 3 and ix > 20]).show()
+# #%%
+# blank_cell = [b for ix, b in enumerate(bad_cells) if ix%20 == 17 and ix > 20][-5]
+# blank_ix = [b for ix, b in enumerate(inv_ix) if ix%20 == 17 and ix > 20][-5]
 
-fname = ocr_df.iloc[blank_ix[0], ocr_df.columns.get_loc("Filename")]
-im = Image.open(fname)
-im.show()
+# fname = ocr_df.iloc[blank_ix[0], ocr_df.columns.get_loc("Filename")]
+# im = Image.open(fname)
+# im.show()
 
-#%%
-#deal with some cells being blanks
-blank_cells, blank_ixs = zip(*[(b,ix) for b,ix in zip(bad_cells, inv_ix)
-                          if np.array(b).min() > 170]#and (np.array(b)==0).sum() ==0]
-                             )#includes orange selected cell, if blank
-# _plot_imgs_concat(blank_cells).show()
-blank_cols = [ocr_df.columns[ix[1]] for ix in blank_ixs]
+# #%%
+# #deal with some cells being blanks
+# blank_cells, blank_ixs = zip(*[(b,ix) for b,ix in zip(bad_cells, inv_ix)
+#                           if np.array(b).min() > 170]#and (np.array(b)==0).sum() ==0]
+#                              )#includes orange selected cell, if blank
+# # _plot_imgs_concat(blank_cells).show()
+# blank_cols = [ocr_df.columns[ix[1]] for ix in blank_ixs]
 
-# Image.open(ocr_df.iloc[blank_ixs[0][0], ocr_df.columns.get_loc("Filename")]).show()
-rix, cix = blank_ixs[12]
-im = Image.open(ocr_df.iloc[rix, ocr_df.columns.get_loc("Filename")])
-new_im = cut_subheaders(im)
-full_row_bnds = get_row_boundries(new_im, header_bnd_box)
-col_bnd = header_bnd_box[cix]
-row_bnd = full_row_bnds[df.index[rix]]
-cell_bnds = (col_bnd[0],
-                                row_bnd[1],
-                                col_bnd[2],
-                                row_bnd[3])
-new_im.crop(cell_bnds).show()
-#%%
-cell_bnds = [(col_bnd[0],
-                                row_bnd[1],
-                                col_bnd[2],
-                                row_bnd[3])
-             for col_bnd in header_bnd_box
-                 for row_bnd in full_row_bnds]
-[b for b in cell_bnds 
- if  np.array(new_im.crop(b)).min() > 170]
+# # Image.open(ocr_df.iloc[blank_ixs[0][0], ocr_df.columns.get_loc("Filename")]).show()
+# rix, cix = blank_ixs[12]
+# im = Image.open(ocr_df.iloc[rix, ocr_df.columns.get_loc("Filename")])
+# new_im = cut_subheaders(im)
+# full_row_bnds = get_row_boundries(new_im, header_bnd_box)
+# col_bnd = header_bnd_box[cix]
+# row_bnd = full_row_bnds[df.index[rix]]
+# cell_bnds = (col_bnd[0],
+#                                 row_bnd[1],
+#                                 col_bnd[2],
+#                                 row_bnd[3])
+# new_im.crop(cell_bnds).show()
+# #%%
+# cell_bnds = [(col_bnd[0],
+#                                 row_bnd[1],
+#                                 col_bnd[2],
+#                                 row_bnd[3])
+#              for col_bnd in header_bnd_box
+#                  for row_bnd in full_row_bnds]
+# [b for b in cell_bnds 
+#  if  np.array(new_im.crop(b)).min() > 170]
+# #%%
+# bad_symbol = ocr_df[ocr_df['Symbol'].apply(lambda i: len(re.findall(col2re['Symbol'],i)) ==0)]
+# bad_symbol_cells = []
+# for fname,ix in zip(bad_symbol['Filename'], bad_symbol.index):
+#         im = Image.open(fname)
+#         new_im = cut_subheaders(im)   
+#         full_row_bnds = get_row_boundries(new_im, header_bnd_box)
+#         # col_bnd = header_bnd_box[cix]
+#         row_bnd = full_row_bnds[df.index[ix]]
+#         # cell_bnds = (col_bnd[0],
+#         #              row_bnd[1],
+#         #              col_bnd[2],
+#         #              row_bnd[3])
+#         bad_symbol_cells += [new_im.crop(row_bnd)]
+# _plot_imgs_concat(bad_symbol_cells).show()
+# #%%
 #%%
 col2n_decimal ={'Strikes': 2,#{n:2 if ix <5 else 0 if ix < 7 else 4 for ix,n in enumerate(col_names)}
          'Symbol': 2,
@@ -976,37 +947,43 @@ col2n_decimal ={'Strikes': 2,#{n:2 if ix <5 else 0 if ix < 7 else 4 for ix,n in 
          'IV': 4,
          'Gamma': 4}
 
-def cast_ocr_col(s):
+def cast_ocr_col(col):
     "takes series of output of pytesseract and processes"
-    col_name = s.name
-    if not isinstance(s, str) or col_name in ('Observed Time', 'Filename'):
-        return s
-    #No always true, multiple non-zero img give this output
-    elif s == '\x0c':
-        print(f"Guessed on {s1}")
-        return 0
-    else:
-        s1 = s
-        s = s.replace("\n\x0c", "")
-        tp = str if col_name == 'Symbol' else \
-             int if col_name in ('Volume', 'Open Int') else \
-             float
-        try:
-            return tp(re.findall(col2re[col_name], s)[0])
-        except:
-            col_re = col2re[col_name].replace(".", "")
-            if len(re.findall(col_re, s)) > 0 and col_name != 'Symbol':
-                return tp(re.findall(col_re, s)[0]/10**col2n_decimal[col_name])
-            if col_name == 'Bid':
-                return 0
-            if col_name == 'Ask':
-                return np.infy
-            print(f"guessed on {s1}")
-            return 0                 
-    
+    if col.name in ('Observed Time', 'Filename'):
+        return col
+    tp = str if col.name == 'Symbol' else \
+         int if col.name in ('Volume', 'Open Int') else \
+         float
+    def _cast_val(s):
+        #No always true, multiple non-zero img give this output
+        if s == '\x0c':
+            print(f"Guessed on {s} in {col.name}")
+            return 0
+        else:
+            s1 = s
+            s = s.replace("\n\x0c", "")
+            try:
+                return tp(re.findall(col2re[col.name], s)[0])
+            except:
+                #make int regex
+                col_re = col2re[col.name].replace(".", "")
+                if len(re.findall(col_re, s)) > 0 and col.name != 'Symbol':
+                    return tp(re.findall(col_re, s)[0]/10**col2n_decimal[col.name])
+                if col.name == 'Bid':
+                    return 0
+                if col.name == 'Ask':
+                    return np.Inf
+                print(f"guessed on {s1}, {col.name}")
+                if col.name == 'Symbol':
+                    return np.nan
+                else:
+                    return tp(0)                 
+    return col.apply(_cast_val)
+
 def proc_ocr_df(df):
     "converts OCR'd results from screenshot into other columns"
-    df = df.apply(_proc_ocr_col)
+    df = df.apply(cast_ocr_col).dropna()
+    print(df.size)
     # df = df.apply(lambda r: r.apply(_cast_ocr), axis=1)
     # df = df.astype({n : str if n == 'Symbol' else
     #                     int if n in ('Volume', 'Open Int') else
@@ -1029,7 +1006,7 @@ def _check_ocr_results(df):
     assert all(df['Bid'] < df['Midpoint']) and all(df['Midpoint'] < df['Ask'])
     assert all(df[['Vega', 'Volume', 'Open Int', 'Bid', 'Midpoint', 'Ask']] >= 0)
     assert all(df.apply(lambda r: r['Strikes'] in r['Symbol'], axis=1))
-    assert all(df['Is_Call'] & df['Delta']>=0) and all(~df['Is_Call'] & df['Delta'] <=0)
+    assert all(df['Is_Call'] & df['Delta']>=0 or ~df['Is_Call'] & df['Delta'] <=0)
     #even ~$4 stock has options priced in whole dollar or 0.5$ increments
     assert all(df['Strikes'].apply(lambda i: i%1 in (0.5, 0.0))), "invalid strike ending"
     
