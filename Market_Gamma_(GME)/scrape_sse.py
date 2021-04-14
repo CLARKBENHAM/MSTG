@@ -602,7 +602,9 @@ def ocr_all_files():
     
     with open("ocrd_dfs", 'wb') as f:
         pickle.dump(dfs, f)
-        
+    # with open("ocrd_dfs", 'rb') as f:
+    #     dfs = pickle.load(f)
+    
     ocr_df = pd.concat(dfs)
     return ocr_df
 
@@ -954,10 +956,12 @@ def cast_ocr_col(col):
     tp = str if col.name == 'Symbol' else \
          int if col.name in ('Volume', 'Open Int') else \
          float
+    guesses = []
     def _cast_val(s):
+        nonlocal guesses
         #No always true, multiple non-zero img give this output
         if s == '\x0c':
-            print(f"Guessed on {s} in {col.name}")
+            guesses += [{repr(s)}]
             return 0
         else:
             s1 = s
@@ -973,40 +977,73 @@ def cast_ocr_col(col):
                     return 0
                 if col.name == 'Ask':
                     return np.Inf
-                print(f"guessed on {s1}, {col.name}")
+                guesses += [{repr(s1)}]
                 if col.name == 'Symbol':
                     return np.nan
                 else:
-                    return tp(0)                 
-    return col.apply(_cast_val)
+                    return tp(0)
+    out = col.apply(_cast_val)
+    print(f"In {col.name}, Guessed on {guesses}")
+    #why volume and oi worst by far??
+    return out
 
-def proc_ocr_df(df):
-    "converts OCR'd results from screenshot into other columns"
-    df = df.apply(cast_ocr_col).dropna()
-    print(df.size)
-    # df = df.apply(lambda r: r.apply(_cast_ocr), axis=1)
-    # df = df.astype({n : str if n == 'Symbol' else
-    #                     int if n in ('Volume', 'Open Int') else
-    #                     np.datetime64 if n == 'Observed Time' else
-    #                     float
-    #                 for n in df.columns})   
-    df['Is Call'] = df['Symbol'].apply(lambda i: i[-1])
-    assert all(df['Is Call'].isin(['C', 'c', 'P', 'p'])), "invalid reading of Symbol column"
-    df['Is Call'] = df['Is Call'].isin(['C', 'c', '¢'])
-    df['Expiry'] = df['Symbol'].apply(lambda i: datetime.strptime(i.split(' ')[1],
-                                                                  '%m/%d/%Y'))
+def _plot_rows_where_not(cond_rows, df):
+    "takes df of T/F and plots rows where True"
+    if not isinstance(cond_rows, pd.Series):
+        cond_rows = cond_rows.apply(any, axis=1)
+    cond_rows = cond_rows.values
+    files = df['Filename'][cond_rows]
+    row_ix = df.index[cond_rows]
+    bad_cells = []
+    prev_fname = ''
+    for f,rix in zip(files, row_ix):
+        if f != prev_fname:
+            im = Image.open(f)
+            new_im = cut_subheaders(im)   
+            full_row_bnds = get_row_boundries(new_im, header_bnd_box)
+            prev_fname = f
+        row_bnd = full_row_bnds[rix]
+        bad_cells += [new_im.crop(row_bnd)]
+    _plot_imgs_concat(bad_cells, mx_h = len(bad_cells)).show()
     
-    return df
-
-def _check_ocr_results(df):
-    """"checks option arbitrage conditions/ definitions
+def check_fix_ocr(df):
+    """"checks option conditions/ definitions
     a sufficent condition for ocr errors, but not nessisary.
         (won't detect volume/OI issues)
+    Don't seem to be misreading chars, if number exists is likely valid
     """
-    assert all(df['Bid'] < df['Midpoint']) and all(df['Midpoint'] < df['Ask'])
+    #assume if wrong these are going to be larger than should be?
+
+    #if all 3 valid floats, then can only detect, can't fix a misinterpretation
+    # chg_mid = 1
+    # #many valid bids of 0
+    # chg_bid = df['Bid'] == 0 |  df['Bid'] >= df['Midpoint']
+    
+    
+    
+    # badbidmid = df['Bid'] > df['Midpoint']
+    # badmidask = df['Midpoint'] > df['Ask']
+    
+    # badbid = badbidmid & df['Midpoint'] >= pred_mid
+    # badmid = 1
+    # badask = badmidask % df['Midpoint'] <= pred_mid
+    
+    # chg_bid = df['Bid'] == 0 |  df['Bid'] >= df['Midpoint']
+    # chg_mid = 1
+    # chg_ask = df['Ask'] == np.Inf | df['Midpoint'] >= df['Ask']
+    # if not all(bidlmid) and all(midlask):
+    #     print(f"{sum(bidlmid)} locs failed for bid >= mid, {sum(midlask)} for ask <= mid")
+    #     df['Bid'][chg_bid] = pred_bid[chg_bid]
+    #     df['Midpoint'][chg_mid] = pred_mid[chg_mid]
+    #     df['Ask'][chg_ask] = pred_ask[chg_ask]
+            
+    
     assert all(df[['Vega', 'Volume', 'Open Int', 'Bid', 'Midpoint', 'Ask']] >= 0)
-    assert all(df.apply(lambda r: r['Strikes'] in r['Symbol'], axis=1))
-    assert all(df['Is_Call'] & df['Delta']>=0 or ~df['Is_Call'] & df['Delta'] <=0)
+    strike2str = lambda i: str(i) if str(i) != "0.5" else ".50"
+    assert all(df.apply(lambda r: strike2str(r['Strikes']) in r['Symbol'], axis=1))
+    assert all(df.apply(lambda r: (r['Is_Call'] & (r['Delta']>=0))\
+                             or (not r['Is_Call'] & (r['Delta'] <=0)),
+                        axis=1))
     #even ~$4 stock has options priced in whole dollar or 0.5$ increments
     assert all(df['Strikes'].apply(lambda i: i%1 in (0.5, 0.0))), "invalid strike ending"
     
@@ -1014,10 +1051,10 @@ def _check_ocr_results(df):
     g_is_mono = lambda g: all(g[c].is_monotonic or g[c].is_monotonic_decreasing
                               for c in ['Bid', 'Midpoint', 'Ask', 'Delta', 'Vega',
                                         'IV Ask', 'IV Bid', 'Rho', 'Theta', 'IV'])
-    g_by_strike = df.groupby(['Is_Call', 'Strike'])
+    g_by_strike = df.groupby(['Is_Call', 'Strikes'])
     g_by_exp = df.groupby(['Is_Call', 'Expiry'])
-    assert all(g_is_mono(g) for g in g_by_strike)    
-    assert all(g_is_mono(g) for g in g_by_exp)    
+    assert all(g_is_mono(g) for _,g in g_by_strike)    
+    assert all(g_is_mono(g) for _,g in g_by_exp)    
     
     #timespreads all positive
     g_by_strike = df.groupby(['Is_Call', 'Strike'])
@@ -1031,9 +1068,9 @@ def _check_ocr_results(df):
                 if g['Is Call'][0] else
                 np.argsort(g['Strike'], reverse=true) == np.argsort(g['Ask'])   #put         
                 for g in g_by_exp]), "prices not monotonic"
-        
-def _check_option_arb(df):
-    """"checks option arbitrage conditions/ definitions
+    
+def _check_option_arb(df):#grib, write in other file?
+    """"checks option arbitrage conditions
     """
     #butterflys negative
     def _make_butterflys(g):
@@ -1046,10 +1083,45 @@ def _check_option_arb(df):
     #no iron butterfly, regular butterly arb
     
     #boxes positive
-
-proc_df = proc_ocr_df(ocr_df)
-_check_ocr_results(proc_df)
     
+def proc_ocr_df(df):
+    "converts OCR'd results from screenshot into other columns"
+    df = df.apply(cast_ocr_col).dropna()
+    
+    pred_mid = np.around((df['Ask'] - df['Bid'])/2, 2)
+    pred_ask = np.around(df['Midpoint'] + (df['Midpoint'] - df['Bid']),2)
+    midbid = df['Midpoint'] - df['Bid']
+    askmid = df['Ask'] - df['Midpoint']
+    #assumes min increment is 0.01; 0.0101 for floating point
+    good_ix = np.abs(askmid - midbid) <=0.0101
+    print(f"{len(df) - sum(good_ix)} locs failed for either bid,mid or ask OCR")
+    #known to be wrong
+    bad_ask = df['Ask'] == np.Inf
+    bad_mid = midbid == 0
+    if sum(bad_ask & bad_mid) > 0:
+        print(f"had to build {sum(bad_ask & bad_mid)} off bid alone")
+        ix = bad_ask & bad_mid
+        df['Ask'][ix] = np.around(df['Bid']*1.3 + 0.3,2)
+        df['Midpoint'][ix] = np.around(df['Bid']*1.2 + 0.2,2)
+    else:
+        df['Ask'][bad_ask] = pred_ask[bad_ask]
+        df['Midpoint'][bad_mid] = pred_mid[bad_mid]
+    #bid is 0 when maybe shouldn't be?
+    pred_bid = np.around(df['Ask'] - 2*(df['Ask'] - df['Midpoint']),2)
+    ix = (pred_bid > 0.05) & (df['Bid'] == 0)
+    print(f"Replaced {sum(ix)} vals in Bid for being 0")
+    df['Bid'][ix] = pred_bid[ix]
+    
+    df['Is_Call'] = df['Symbol'].apply(lambda i: i[-1])
+    assert all(df['Is_Call'].isin(['C', 'c', 'P', 'p'])), "invalid reading of Symbol column"
+    df['Is_Call'] = df['Is_Call'].isin(['C', 'c', '¢'])
+    df['Expiry'] = df['Symbol'].apply(lambda i: datetime.strptime(i.split(' ')[1],
+                                                                  '%m/%d/%Y'))
+    return df
+        
+# proc_df = proc_ocr_df(ocr_df)
+check_fix_ocr(proc_df)
+
 #%%
 # #Works but not useful
 # full_row.save("data_table.png")
