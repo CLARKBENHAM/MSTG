@@ -14,7 +14,7 @@ from collections import namedtuple
 import pickle
 import os
 import sys
-github_dir = "c:\\Users\\student.DESKTOP-UT02KBN\\MSTG"
+github_dir = "c:\\Users\\Clark Benham\\Desktop\\MSTG"
 #%%
 if __name__ == "__main__":
     base_url = "https://finance.yahoo.com/quote/GME/options"
