@@ -11,6 +11,7 @@ import pyautogui as pygu
 import sys
 import time
 import re
+
 import random
 
 def expand_shadow_element(element):
@@ -37,7 +38,13 @@ driver.get("https://mail.google.com/mail/u/1/?shva=1#label/IFR")
 driver.find_element_by_xpath("//input[@type='email']").send_keys("cb5ye@virginia.edu\n")
 driver.find_element_by_xpath("//input[@value='Log In']").send_keys("\n\n")
 pygu.press('enter')
+
+#%%Login and navigate to the sign in page
+temp = ''
+while 'y' not in temp.lower():
+    temp = input("Enter Y once have nagivated to the IFR label: ")
 #%%
+
 pygu.PAUSE = 0.5
 #change class if reload
 table = driver.find_elements_by_xpath('//tbody/tr[@class="zA zE"]')
