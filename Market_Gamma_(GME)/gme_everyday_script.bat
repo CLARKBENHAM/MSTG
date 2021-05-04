@@ -1,6 +1,6 @@
-@ECHO OFF
+@ECHO ON
 :run_script
-    ::scrapping_options_prices.py > temp_file.txt
+::scrapping_options_prices.py > temp_file.txt
     
    setlocal
     %@Try%
